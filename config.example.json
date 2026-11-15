@@ -1,0 +1,24 @@
+{
+  "backend": "auto",
+  "claude_model": "",
+  "codex_model": "",
+  "anthropic_model": "claude-sonnet-5-5",
+  "openai_model": "gpt-5",
+  "claude_model_fast": "haiku",
+  "codex_model_fast": "",
+  "anthropic_model_fast": "claude-haiku-5-5",
+  "openai_model_fast": "",
+  "custom_model_fast": "",
+  "custom_base_url": "",
+  "custom_model": "",
+  "sources": {
+    "jobspy": true,
+    "jobspy_boards": ["indeed", "glassdoor", "linkedin"],
+    "remotive": true,
+    "arbeitnow": true
+  },
+  "results_per_board": 25,
+  "hours_old": 336,
+  "max_ai_scored": 40,
+  "app_title": "شغلي"
+}

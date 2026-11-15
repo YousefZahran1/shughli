@@ -1,0 +1,45 @@
+Jordan Lee
+Berlin, Germany • jordan.lee@example.com • +49 170 0000000
+linkedin.com/in/jordanlee-demo • github.com/jordanlee-demo
+
+SUMMARY
+Junior Data Scientist with hands-on experience building and shipping ML models
+end to end. Delivered a churn-prediction model (AUC 0.87) now used in production,
+and automated a reporting pipeline that cut manual work by 12 hours/week. Strong
+Python, SQL, and cloud deployment fundamentals.
+
+CORE SKILLS
+Programming: Python, SQL, scikit-learn, Pandas, NumPy, PyTorch, FastAPI
+Data/ML: Machine Learning, Feature Engineering, Model Evaluation, A/B Testing, NLP
+Cloud/Eng: Docker, AWS (S3, EC2), Git, CI/CD, Airflow
+Visualization: Power BI, Matplotlib, Plotly
+
+EXPERIENCE
+Data Analyst (Working Student) — Nordwind Logistics, Berlin
+Mar 2024 – Present
+- Built a churn-prediction model (XGBoost, AUC 0.87) that flagged at-risk
+  accounts; adopted by the retention team and tied to a 9% drop in churn.
+- Automated weekly KPI reporting with Python + Airflow, cutting 12 hours/week of
+  manual Excel work and removing recurring data-entry errors.
+- Wrote SQL to consolidate 3 data sources into one warehouse table used by 20+
+  analysts.
+
+PROJECTS
+Real-Time Sentiment Dashboard | Python, FastAPI, Hugging Face, Docker (2024)
+- Built an NLP service classifying 10k+ daily reviews with a fine-tuned
+  transformer (F1 0.91); deployed on AWS with Docker and a FastAPI endpoint.
+- Added drift monitoring and a Streamlit dashboard for non-technical users.
+
+Bike-Demand Forecasting | Python, scikit-learn, Power BI (2023)
+- Forecasted hourly demand (MAE 3.1 bikes) using gradient boosting; results
+  informed rebalancing and improved availability during peak hours.
+
+EDUCATION
+B.Sc. Computer Science — Technical University of Berlin
+2021 – 2024 • GPA 1.7 (German scale) • Thesis: time-series anomaly detection
+
+CERTIFICATIONS
+AWS Certified Cloud Practitioner (2024) • DeepLearning.AI ML Specialization (2023)
+
+LANGUAGES
+English (fluent) • German (B2) • Mandarin (native)

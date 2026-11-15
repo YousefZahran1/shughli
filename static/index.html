@@ -1,0 +1,211 @@
+<!doctype html>
+<html lang="en">
+<!-- شغلي (Job Hunt Cockpit) — built by jo builds -->
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="author" content="jo builds">
+<title>شغلي</title>
+<link rel="icon" href="jobuilds.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Arabic:wght@500;700&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <span class="logo" aria-hidden="true"></span>
+    <div><h1 id="app-title" lang="ar" dir="rtl">شغلي</h1>
+      <p class="sub" id="subtitle">upload your CV · pick where you want to work · runs on your own AI subscription</p></div>
+  </div>
+  <nav class="tabs">
+    <button class="tab on" data-tab="jobs">Jobs</button>
+    <button class="tab" data-tab="profile">Profile</button>
+    <button class="tab" data-tab="settings">Settings</button>
+  </nav>
+  <span id="backend-pill" class="pill pill-muted">checking…</span>
+</header>
+
+<!-- ============ JOBS ============ -->
+<section id="tab-jobs" class="panel">
+  <div id="fetch-panel" class="fetch-panel hidden">
+    <div class="fetch-head"><strong id="fetch-title">Fetching…</strong>
+      <button id="fetch-close" class="btn btn-ghost small">hide</button></div>
+    <pre id="fetch-log" class="fetch-log"></pre>
+  </div>
+  <div class="jobs-wrap">
+    <aside class="filters">
+      <div class="row-between"><h2>Filter</h2><button id="fetch-btn" class="btn btn-primary small">↻ Fetch</button></div>
+      <label class="fl">Search <input id="f-search" type="text" placeholder="title / company"></label>
+      <label class="fl">Min score <span id="f-score-val">0</span>
+        <input id="f-score" type="range" min="0" max="100" value="0"></label>
+      <div class="fl"><span class="fl-label">Region</span><div id="f-region" class="chips"></div></div>
+      <div class="fl"><span class="fl-label">Level <span class="muted small" title="The job's seniority level, from your Profile seniority choices">ⓘ</span></span><div id="f-elig" class="chips"></div></div>
+      <p class="muted small" id="count-line">—</p>
+    </aside>
+    <div class="joblist">
+      <table><thead><tr><th>Score</th><th>Title</th><th>Company</th><th>Location</th><th>Fit</th><th>Source</th></tr></thead>
+        <tbody id="jobs-body"><tr><td colspan="6" class="empty" id="jobs-empty">No jobs yet. Set up your <b>Profile</b>, then hit <b>Fetch</b>.</td></tr></tbody></table>
+    </div>
+  </div>
+</section>
+
+<!-- ============ PROFILE ============ -->
+<section id="tab-profile" class="panel hidden">
+  <div class="profile-wrap">
+    <div id="onboard" class="onboard hidden">
+      <div class="onboard-head"><h2>Welcome — let's set you up</h2>
+        <p class="muted small">Register everything once. It's all stored locally on your machine. Then head to Jobs.</p></div>
+      <ol class="steps">
+        <li data-step="cv"><span class="dot">1</span> Upload your CV</li>
+        <li data-step="who"><span class="dot">2</span> Name + nationality</li>
+        <li data-step="where"><span class="dot">3</span> Target country + role keywords</li>
+        <li data-step="save"><span class="dot">4</span> Save &amp; start</li>
+      </ol>
+    </div>
+    <div class="card upload-card">
+      <div>
+        <h3>Import your CV</h3>
+        <p class="muted small">PDF, DOCX, or TXT. It auto-fills your profile below — review and confirm, nothing is sent anywhere except your own AI backend.</p>
+      </div>
+      <div class="upload-actions">
+        <input id="cv-file" type="file" accept=".pdf,.docx,.txt,.md" hidden>
+        <button id="cv-upload-btn" class="btn btn-primary">⬆ Upload CV</button>
+        <span id="cv-status" class="muted small"></span>
+      </div>
+    </div>
+
+    <div id="cv-quality" class="cvq hidden">
+      <div class="cvq-body">
+        <strong id="cvq-title">⚠ Your CV looks weak</strong>
+        <p id="cvq-verdict" class="small"></p>
+      </div>
+      <div class="cvq-actions">
+        <button id="cvq-improve" class="btn btn-danger">Improve it with AI</button>
+        <button id="cvq-dismiss" class="btn btn-ghost small">dismiss</button>
+      </div>
+    </div>
+    <div class="row-between" style="margin:-4px 2px 0">
+      <span class="muted small">Not sure how strong your CV is?</span>
+      <button id="cv-check-btn" class="btn btn-ghost small">⚑ Check my CV quality</button>
+    </div>
+
+    <div class="grid2">
+      <div class="card"><h3>Personal</h3>
+        <label class="fl req" data-req="name">Name <span class="star">* required</span>
+          <input data-p="personal.name" type="text"></label>
+        <label class="fl">Email <input data-p="personal.email" type="text"></label>
+        <label class="fl">Phone <input data-p="personal.phone" type="text"></label>
+        <label class="fl">Current location <input data-p="personal.location" type="text"></label>
+        <label class="fl req" data-req="nationality">Nationality <span class="star">* required</span>
+          <input data-p="nationality" type="text" placeholder="some jobs filter by nationality"></label>
+        <label class="fl">Links (one per line)<textarea data-plist="personal.links" rows="3"></textarea></label>
+      </div>
+      <div class="card"><h3>Where you want to work</h3>
+        <label class="fl req big" data-req="target_country">Target country <span class="star">* required</span>
+          <input data-p="preferences.target_country" type="text" placeholder="e.g. Germany"></label>
+        <label class="fl">Target city <input data-p="preferences.target_city" type="text" placeholder="e.g. Berlin"></label>
+        <label class="fl check"><input data-p="preferences.also_remote" type="checkbox"> Also include remote roles</label>
+        <label class="fl req" data-req="role_keywords">Role keywords <span class="star">* at least one</span>
+          <textarea data-plist="preferences.role_keywords" rows="4" placeholder="data scientist&#10;machine learning"></textarea></label>
+        <div class="fl"><span class="fl-label">Seniority levels you want</span>
+          <div id="seniority-checks" class="checks">
+            <label><input type="checkbox" value="internship"> Internship</label>
+            <label><input type="checkbox" value="working student"> Working student</label>
+            <label><input type="checkbox" value="junior"> Junior / Entry</label>
+            <label><input type="checkbox" value="mid"> Mid-level</label>
+            <label><input type="checkbox" value="senior"> Senior</label>
+          </div></div>
+      </div>
+    </div>
+
+    <div class="card"><h3>Summary</h3>
+      <textarea data-p="summary" rows="3" class="full"></textarea></div>
+
+    <div class="card"><div class="row-between"><h3>Work authorization</h3><button class="btn btn-ghost small" data-add="work">+ add</button></div>
+      <p class="muted small">Per region — drives what the cover letter can claim. e.g. Region "Germany", Status "student visa — working-student/intern eligible".</p>
+      <div id="work-list" class="repeat"></div></div>
+
+    <div class="card"><h3>Skills</h3>
+      <p class="muted small">One line per category: <code>Category: item, item, item</code></p>
+      <textarea id="skills-text" rows="5" class="full mono"></textarea></div>
+
+    <div class="card"><div class="row-between"><h3>Experience</h3><button class="btn btn-ghost small" data-add="exp">+ add</button></div>
+      <div id="exp-list" class="repeat"></div></div>
+    <div class="card"><div class="row-between"><h3>Projects</h3><button class="btn btn-ghost small" data-add="proj">+ add</button></div>
+      <div id="proj-list" class="repeat"></div></div>
+    <div class="card"><div class="row-between"><h3>Education</h3><button class="btn btn-ghost small" data-add="edu">+ add</button></div>
+      <div id="edu-list" class="repeat"></div></div>
+
+    <div class="grid2">
+      <div class="card"><h3>Certifications</h3><textarea data-plist="certifications" rows="4" class="full" placeholder="one per line"></textarea></div>
+      <div class="card"><h3>Languages</h3><textarea data-plist="languages" rows="4" class="full" placeholder="one per line"></textarea></div>
+    </div>
+
+    <div class="save-bar"><span id="profile-saved" class="muted small"></span>
+      <button id="profile-save" class="btn btn-primary">Save profile</button>
+      <button id="goto-jobs" class="btn btn-ghost hidden">Go to Jobs →</button></div>
+  </div>
+</section>
+
+<!-- ============ SETTINGS ============ -->
+<section id="tab-settings" class="panel hidden">
+  <div class="settings-wrap">
+    <div class="card"><h3>AI backend</h3>
+      <p class="muted small">Pick what generation runs on. CLI options use your existing subscription — log in right here, no terminal. API options need a key you paste in. Auto picks the first available.</p>
+      <div id="backend-options" class="backend-list"></div>
+    </div>
+    <div class="card"><h3>Job sources</h3>
+      <label class="fl check"><input data-cfg="sources.jobspy" type="checkbox"> JobSpy (Indeed / LinkedIn / Glassdoor)</label>
+      <label class="fl check"><input data-cfg="sources.remotive" type="checkbox"> Remotive (remote)</label>
+      <label class="fl check"><input data-cfg="sources.arbeitnow" type="checkbox"> Arbeitnow (Germany only)</label>
+      <label class="fl">Results per board <input data-cfg="results_per_board" type="number" min="5" max="100"></label>
+      <label class="fl">Max age (hours) <input data-cfg="hours_old" type="number" min="24" max="2160"></label>
+    </div>
+    <div class="save-bar"><span id="settings-saved" class="muted small"></span>
+      <button id="settings-save" class="btn btn-primary">Save settings</button></div>
+  </div>
+</section>
+
+<!-- ============ CV IMPROVE MODAL ============ -->
+<div id="cvmodal" class="modal hidden"><div class="modal-box">
+  <button id="cvmodal-close" class="btn btn-ghost drawer-x">✕</button>
+  <h2>Improve your CV with AI</h2>
+  <p class="muted small">The AI reviewed your CV. Answer what you can — it'll rewrite your summary, experience, and projects stronger. Nothing is invented; it only uses your answers.</p>
+  <div id="cvmodal-review"></div>
+  <div id="cvmodal-questions"></div>
+  <div class="modal-actions">
+    <span id="cvmodal-status" class="muted small"></span>
+    <button id="cvmodal-apply" class="btn btn-primary">Apply improvements</button>
+  </div>
+</div></div>
+
+<!-- ============ DRAWER ============ -->
+<div id="drawer" class="drawer hidden"><div class="drawer-inner">
+  <button id="drawer-close" class="btn btn-ghost drawer-x">✕</button>
+  <h2 id="d-title">—</h2><p id="d-meta" class="muted"></p>
+  <div class="d-badges" id="d-badges"></div>
+  <div class="d-actions">
+    <a id="d-apply" class="btn btn-ghost" target="_blank" rel="noopener">Open posting ↗</a>
+    <button id="d-tailor" class="btn btn-primary">✨ Tailor CV + cover letter</button></div>
+  <div id="d-genstatus" class="genstatus hidden"></div>
+  <div id="d-gen" class="gen hidden"><div class="gen-cols">
+    <div class="gen-col"><h3>Tailored CV <a id="dl-cv" class="dl" href="#">⬇ .docx</a></h3>
+      <p class="label">Summary</p><p id="g-summary"></p>
+      <p class="label">Skills</p><ul id="g-skills" class="tight"></ul>
+      <p class="label">Projects</p><ul id="g-projects" class="tight"></ul></div>
+    <div class="gen-col"><h3>Cover letter <a id="dl-cl" class="dl" href="#">⬇ .docx</a></h3>
+      <pre id="g-cover" class="cover"></pre><div id="g-fit" class="fit"></div></div>
+  </div></div>
+  <h3 class="jd-h">Job description</h3><pre id="d-desc" class="desc"></pre>
+</div></div>
+
+<footer class="signature">
+  <span class="muted small">Built by</span>
+  <a href="jobuilds.png" target="_blank" rel="noopener" class="sig-link" title="jo builds"><img src="jobuilds.png" alt="jo builds" class="sig-logo"></a>
+</footer>
+
+<script src="app.js"></script>
+</body>
+</html>

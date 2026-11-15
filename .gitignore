@@ -1,0 +1,27 @@
+# Personal data — never commit
+/data/
+config.json
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+env/
+*.egg-info/
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Secrets
+.env
+.pytest_cache/
+.claude/
+.env
+.env.*
+*.corrupt
+*.prev.json
+config.json
