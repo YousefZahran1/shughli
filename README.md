@@ -21,7 +21,7 @@ Everything runs locally. The only thing that leaves your machine is the text sen
 You need Python 3.10 or newer.
 
 ```bash
-git clone <this-repo-url>
+git clone https://github.com/YousefZahran1/shughli.git
 cd shughli
 python -m pip install -r requirements.txt
 python app.py
