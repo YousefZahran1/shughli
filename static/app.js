@@ -396,6 +396,11 @@ async function tailor() {
     const checks = p.source_checks || {};
     $("#g-review-notes").textContent = "Review before submitting: " + (checks.note || "Check all claims against your CV.") +
       (checks.warnings?.length ? "\n" + checks.warnings.join("\n") : "");
+    const removed = p.dropped_items || {};
+    $("#g-dropped-items").textContent = [
+      ...(removed.skills || []).map(s => `Removed unsupported skill: ${s.item}`),
+      ...(removed.projects || []).map(pr => `Removed unsupported project: ${pr.header}`)
+    ].join("\n");
     const fit = p.fit || {};
     $("#g-fit").innerHTML = (fit.matches || []).map(m => `<div>✓ <b>${esc(m)}</b></div>`).join("") + (fit.gaps || []).map(g => `<div class="gap">△ <b>${esc(g)}</b></div>`).join("");
     $("#dl-cv").href = "/api/download?path=" + encodeURIComponent(p.cv_docx);

@@ -22,3 +22,9 @@ def test_cover_copy_excludes_notes():
     assert nodes['#g-cover']['textContent']=='Dear team, my real letter.'
     assert 'Metric unsupported' in nodes['#g-review-notes']['textContent']
     assert 'id="g-review-notes"' in Path('static/index.html').read_text(encoding='utf-8')
+
+def test_dropped_items_are_visible():
+    nodes=render_package({'cover_letter':'Only letter', 'dropped_items':{'skills':[{'item':'Kubernetes'}], 'projects':[{'header':'Fake project'}]}})
+    text=nodes['#g-dropped-items']['textContent']
+    assert 'Kubernetes' in text and 'Fake project' in text
+    assert nodes['#g-cover']['textContent']=='Only letter'
