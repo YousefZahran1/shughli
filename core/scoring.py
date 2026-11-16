@@ -127,7 +127,7 @@ def score_key(profile: dict, cfg=None) -> str:
     """Identifies what a score was computed against: CV text, target levels, prompt version."""
     seniority = profile.get("preferences", {}).get("seniority", [])
     basis = profile_mod.as_cv_text(profile) + "\n" + ",".join(sorted(seniority)) + "\n" + PROMPT_VERSION
-    return policy.digest([basis, profile.get("work_authorization", []), _PROMPT, policy.fingerprint(cfg, "fast")])
+    return policy.digest([basis, profile.get("work_authorization", []), _PROMPT, policy.fingerprint(cfg, "score")])
 
 
 # --------------------------------------------------------------- score ----
@@ -140,7 +140,7 @@ def score_jobs(jobs: list[dict], profile: dict, cfg=None, log=print) -> dict[str
     for i in range(0, len(jobs), BATCH):
         batch = jobs[i:i + BATCH]
         try:
-            data = engine.generate_json(_prompt(cv, wa, batch, seniority), cfg=cfg, task="fast")
+            data = engine.generate_json(_prompt(cv, wa, batch, seniority), cfg=cfg, task="score")
             for item in _items(data):
                 if not isinstance(item, dict):
                     continue

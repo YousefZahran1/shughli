@@ -50,7 +50,7 @@ Return ONLY JSON:
 }}
 Give 3-6 issues, 2-5 missing items, and 4-6 questions. Questions should pull out
 quantified impact, scope, tools, and outcomes the CV is missing."""
-    data = engine.generate_json(prompt, cfg=cfg, task="main", schema=validation.REVIEW_SCHEMA)
+    data = engine.generate_json(prompt, cfg=cfg, task="review", schema=validation.REVIEW_SCHEMA)
     if not isinstance(data, dict):
         raise engine.EngineError("CV review returned an unexpected shape.")
     return validation.schema_check(validation.review(data), validation.REVIEW_SCHEMA)
@@ -86,7 +86,7 @@ Return ONLY JSON with improved content for these fields (same shapes as a profil
 }}
 Rewrite bullets to lead with impact and include numbers where the candidate gave
 them. Keep every real role/project; do not drop any."""
-    data = engine.generate_json(prompt, cfg=cfg, timeout=300, task="main", schema=validation.IMPROVE_SCHEMA)
+    data = engine.generate_json(prompt, cfg=cfg, timeout=300, task="improve", schema=validation.IMPROVE_SCHEMA)
     if not isinstance(data, dict):
         raise engine.EngineError("CV improve returned an unexpected shape.")
     validation.content(data)

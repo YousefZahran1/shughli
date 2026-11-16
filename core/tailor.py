@@ -254,7 +254,7 @@ def _ground_skills(skills: list[list[str]], cv_text: str, job_desc: str, log=pri
 
 def generate(job: dict, profile: dict, cfg=None) -> dict:
     cv = profile_mod.as_cv_text(profile)
-    data = engine.generate_json(_gen_prompt(cv, job, profile), cfg=cfg, timeout=300, task="main", schema=validation.TAILOR_SCHEMA)
+    data = engine.generate_json(_gen_prompt(cv, job, profile), cfg=cfg, timeout=300, task="tailor", schema=validation.TAILOR_SCHEMA)
     if not isinstance(data, dict):
         raise engine.EngineError("Generation returned an unexpected shape.")
     for key in ("summary", "skills", "cover_letter"):

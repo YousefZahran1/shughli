@@ -61,7 +61,7 @@ CV text:
 def structure_cv(raw_text: str, cfg: dict | None = None) -> dict:
     if not raw_text.strip():
         raise RuntimeError("No text could be read from that file.")
-    data = engine.generate_json(_PROMPT.format(cv=raw_text[:16000]), cfg=cfg, task="fast", schema=validation.IMPORT_SCHEMA)
+    data = engine.generate_json(_PROMPT.format(cv=raw_text[:16000]), cfg=cfg, task="import", schema=validation.IMPORT_SCHEMA)
     if not isinstance(data, dict):
         raise engine.EngineError("CV import returned an unexpected shape.")
     validation.content(data)

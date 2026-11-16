@@ -53,6 +53,7 @@ async function refreshStatus() {
   try { s = await (await fetch("/api/status")).json(); }
   catch (e) { $("#subtitle").textContent = "\u26a0 server not reachable"; return null; }
   LAST_STATUS = s;
+  showModelRouting(s.model_routing);
   CONFIG = s.config;
   $("#app-title").textContent = s.app_title;
   document.title = s.app_title;
@@ -279,6 +280,10 @@ async function saveKey(field, btn) {
   await fetch("/api/keys", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ [field]: val }) });
   input.value = ""; await refreshStatus(); loadBackends();
 }
+function showModelRouting(routing) {
+  if (!routing) return;
+  $("#effective-models").textContent = `Active backend: ${routing.backend}. Fast tier: ${routing.tiers.fast}. Main tier: ${routing.tiers.main}.`;
+}
 function renderSettings() {
   $$("[data-cfg]").forEach(el => {
     const v = getPath(CONFIG, el.dataset.cfg);
@@ -294,6 +299,7 @@ async function saveSettings() {
   try {
     const r = await (await fetch("/api/config", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(cfg) })).json();
     if (!r.ok) throw new Error(r.msg || "save failed");
+    showModelRouting(r.model_routing);
     CONFIG = r.config; $("#settings-saved").textContent = "saved ✓";
     refreshStatus(); setTimeout(() => $("#settings-saved").textContent = "", 2500);
   } catch (e) { $("#settings-saved").textContent = "\u26a0 " + e.message; }

@@ -103,6 +103,7 @@ def status():
     return jsonify({
         "backends": engine.available_backends(cfg),
         "active_backend": engine.resolve_backend(cfg),
+        "model_routing": policy.model_routing(cfg),
         "keys": {"anthropic": bool(cfg.get("anthropic_api_key")),
                  "openai": bool(cfg.get("openai_api_key"))},
         "profile_ready": profile_mod.is_ready(prof),
@@ -305,7 +306,7 @@ def set_config():
         else:
             cfg[k] = v
     config.save_config(cfg)
-    return jsonify({"ok": True, "config": _public_cfg(cfg)})
+    return jsonify({"ok": True, "config": _public_cfg(cfg), "model_routing": policy.model_routing(cfg)})
 
 
 @app.post("/api/fetch")

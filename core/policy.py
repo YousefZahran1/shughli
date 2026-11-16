@@ -27,6 +27,24 @@ class RunPolicy:
     max_output_chars: int = 60000
     max_attempts: int = 2
 
+TASK_TIERS = {"score": "fast", "import": "fast", "review": "main",
+              "improve": "main", "tailor": "main"}
+
+def tier_for(task):
+    # Legacy tier inputs remain accepted for external integrations/tests.
+    return TASK_TIERS.get(task, task)
+
+def model_routing(cfg=None):
+    from . import engine
+    cfg = config.load_config() if cfg is None else cfg
+    backend = engine.resolve_backend(cfg)
+    key = backend.replace("-cli", "").replace("-api", "") + "_model"
+    defaults = {"openai-api": "gpt-5", "anthropic-api": "claude-sonnet-5-5"}
+    tiers = {tier: engine._model_for(cfg, key, tier) or defaults.get(backend, "CLI default" if backend.endswith("-cli") else "not configured")
+             for tier in ("main", "fast")}
+    return {"backend": backend, "tiers": tiers,
+            "tasks": {task: tiers[tier] for task, tier in TASK_TIERS.items()}}
+
 # Visible-answer budgets; reasoning models receive additional completion headroom.
 OUTPUT_TOKENS = {"score": 2048, "import": 8192, "review": 3072,
                  "improve": 12288, "tailor": 8192}

@@ -41,6 +41,7 @@ class EngineResult:
     text: str
     via: str
     raw: dict | None = None
+    models: tuple[str, ...] = ()
 
 
 # ----------------------------------------------------------- detection ----
@@ -155,7 +156,7 @@ _CLAUDE_LEAN = ["--tools", "", "--strict-mcp-config", "--safe-mode", "--no-sessi
 def _model_for(cfg: dict, main_key: str, task: str) -> str:
     """Model for this task. 'fast' tasks use the <backend>_model_fast key if set,
     else the main model."""
-    if task == "fast":
+    if policy.tier_for(task) == "fast":
         fast = cfg.get(main_key.replace("_model", "_model_fast"))
         if fast:
             return fast
@@ -195,7 +196,7 @@ def _run_claude(prompt: str, timeout: int, cfg: dict, task: str = "main", budget
     text = str(env.get("result", "")).strip()
     if not text:
         raise _cli_failure("claude", proc.stdout, proc.stderr)
-    return EngineResult(text=text, via="claude-cli", raw=env)
+    return EngineResult(text=text, via="claude-cli", raw=env, models=tuple(env.get("modelUsage", {})))
 
 
 # -------------------------------------------------------------- Codex ----
@@ -282,7 +283,7 @@ def _run_anthropic(prompt: str, timeout: int, cfg: dict, task: str = "main", bud
                    if b.get("type") == "text").strip()
     if not text:
         raise EngineError("Anthropic API returned empty text.")
-    return EngineResult(text=text, via="anthropic-api", raw={"usage": r.json().get("usage", {})})
+    return EngineResult(text=text, via="anthropic-api", raw={"usage": r.json().get("usage", {})}, models=(r.json().get("model") or model,))
 
 
 def _run_openai(prompt: str, timeout: int, cfg: dict, task: str = "main", budget=None) -> EngineResult:
@@ -306,7 +307,7 @@ def _run_openai(prompt: str, timeout: int, cfg: dict, task: str = "main", budget
     text = (r.json()["choices"][0]["message"]["content"] or "").strip()
     if not text:
         raise EngineError("OpenAI API returned empty text.")
-    return EngineResult(text=text, via="openai-api", raw={"usage": r.json().get("usage", {})})
+    return EngineResult(text=text, via="openai-api", raw={"usage": r.json().get("usage", {})}, models=(r.json().get("model") or model,))
 
 
 def _run_custom(prompt: str, timeout: int, cfg: dict, task: str = "main", budget=None) -> EngineResult:
@@ -339,7 +340,7 @@ def _run_custom(prompt: str, timeout: int, cfg: dict, task: str = "main", budget
     text = (r.json()["choices"][0]["message"]["content"] or "").strip()
     if not text:
         raise EngineError("Custom API returned empty text.")
-    return EngineResult(text=text, via="custom-api")
+    return EngineResult(text=text, via="custom-api", raw={"usage": r.json().get("usage", {})}, models=(r.json().get("model") or model,))
 
 
 _RUNNERS = {
@@ -356,7 +357,7 @@ def generate(prompt: str, timeout: int = 300, cfg: dict | None = None,
              task: str = "main", _budget: dict | None = None) -> EngineResult:
     """task: "fast" (scoring, CV import) uses the cheaper model tier; "main" the strong one."""
     cfg = config.load_config() if cfg is None else cfg
-    if task not in {"main", "fast"}:
+    if policy.tier_for(task) not in {"main", "fast"}:
         raise EngineError("Unknown AI task tier.")
     if len(prompt) > policy.POLICY.max_input_chars:
         raise EngineError("AI input is too large. Shorten the CV or answers.")
@@ -364,12 +365,17 @@ def generate(prompt: str, timeout: int = 300, cfg: dict | None = None,
     if backend not in _RUNNERS:
         raise EngineError("No supported AI backend available. Select a backend in Settings.")
     try:
-        with policy.scope(timeout, background=(task in {"fast", "score"})) as run:
+        with policy.scope(timeout, background=(task == "score")) as run:
             run.attempt()
             result = _RUNNERS[backend](policy.SYSTEM + "\n\n" + prompt, run.remaining(), cfg, task, _budget)
             run.remaining()
             if len(result.text) > policy.POLICY.max_output_chars:
                 raise EngineError("AI output exceeded the size limit.")
+            try:
+                policy.trace(run, backend=backend, task=task, models=list(result.models),
+                             model_source="provider" if result.models else "not_reported", outcome="model_returned")
+            except OSError:
+                pass
             if result.raw and isinstance(result.raw.get("usage"), dict):
                 usage = {k: v for k, v in result.raw["usage"].items() if isinstance(v, (int, float))}
                 try:
@@ -415,7 +421,7 @@ def generate_json(prompt: str, timeout: int = 300, cfg: dict | None = None, task
     first), so the worst case is two calls and cost stays bounded."""
     cfg = config.load_config() if cfg is None else cfg
     try:
-        with policy.scope(timeout, background=(task in {"fast", "score"})) as run:
+        with policy.scope(timeout, background=(task == "score")) as run:
             schema_token = _RESPONSE_SCHEMA.set(schema)
             outcome = "failed"
             try:
