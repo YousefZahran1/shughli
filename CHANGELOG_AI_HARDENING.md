@@ -76,3 +76,52 @@ Status: Implemented locally; automated checks pass. No GitHub push or live provi
 - Created AI_CONTROL_REVIEW.md with current implemented/partial controls and an ordered next-work assessment.
 - Clarified per-generation versus whole-workflow limits, configured versus runtime-verified isolation, and normalized validation versus strict raw validation.
 - This follow-up was a read-only code review plus documentation; no source changes, live calls, or new test runs.
+
+## Requested policy corrections — completed locally on ai-policy-fixes
+
+This section supersedes earlier limitations addressed below. Existing uncommitted work was preserved first as ade9018. All commits use the repository identity Youssef Ibrahim <youssefzahran.y@gmail.com>, without co-author trailers. Nothing was pushed and no GitHub tools were used.
+
+### Test-first evidence and commits
+
+| Fix | Observed red test result | Green result and local commit |
+|---|---|---|
+| Preserve existing changes | No modifications discarded | ade9018 — Preserve existing AI hardening work |
+| 1. CLI errors | 16 new failures | 36 relevant tests passed; ef4e88d — Classify CLI errors and retain private diagnostics |
+| 2. Gate waiting | 3 new failures | 3 new tests passed; 0093eaf — Wait for AI capacity within task deadlines |
+| 3. Output budgets/truncation | 5 new failures | 50 relevant tests passed; 600efd1 — Budget outputs per task and detect truncated replies |
+| 4. Named routing/effective models | 4 new failures | 49 relevant tests passed; 20f00ba — Route named tasks and expose effective model selection |
+| 5. Workflow ID/budget/cancel | 4 new failures | 52 relevant tests passed; 42c4315 — Bound search workflows and add cancellation |
+| 6. System/unused plumbing | 3 new failures | 64 relevant tests passed; 751ed3b — Send system instructions once and remove unused plumbing |
+| 7. Cover-letter copy | 1 new failure | 1 renderer test passed; 48c2f08 — Keep review notes outside copied cover letter |
+| 8. Grounding/removal disclosure | 4 new failures (prior renderer test still passed) | 50 relevant tests passed; 3fca430 — Normalize grounding aliases and disclose removed items |
+| Workflow blocking-work follow-up | 2 additional failures | 6 workflow tests passed; 0c939c8 — Stop cancelled or expired searches during blocking work |
+| CLI limit/model metadata follow-up | 3 additional failures | 23 relevant tests passed; 702ac7d — Handle CLI limit wording and capture Codex model metadata |
+
+### Implemented behavior
+
+- CLI JSON/JSONL envelopes are inspected before exit status. Errors are categorized and sanitized; auth failures restore the login instruction on any exit code. Only explicit unknown/unrecognized option errors in stderr blame required isolation flags.
+- Truncated raw diagnostics are separated into local ignored data/private_debug/*.json, using restrictive creation modes where supported by the OS. They never enter user-visible error messages or normal traces.
+- Interactive gate wait is 20 seconds maximum; scoring waits against its own deadline rather than failing immediately because two other runs are busy.
+- API output budgets are task-specific (score 2,048; import 8,192; review 3,072; improve 12,288; tailor 8,192). OpenAI reasoning models have additional completion headroom. Explicit truncation raises a cut-off error and does not invoke JSON repair.
+- Custom max_completion_tokens-to-max_tokens HTTP 400 compatibility retry consumes the same retry budget as API/JSON retries.
+- All application callers use score/import/review/improve/tailor. A single routing table defines the tiers. Settings/API display fallback models. Provider-reported model metadata is recorded (Claude modelUsage keys specifically); missing metadata is labeled rather than invented.
+- Searches share a workflow ID, 12-batch/600-second limits, and a UI cancellation endpoint. Waiting stops promptly during collection/scoring; late results cannot persist. Existing provider requests may continue until completion/timeout, retaining their AI slot.
+- The shared system instruction is sent once. Removed lean and redundant generation cwd arguments; cleaned unused imports.
+- Review notes and removal disclosures are outside #g-cover, keeping copied text clean.
+- Grounding uses normalized word-boundary matching and selected common aliases. Removed skills/projects are returned, saved and shown to users.
+
+### Final verification
+
+- python -m pytest -q --basetemp=work/pytest-policy-final: **142 passed in 31.30 seconds**.
+- node --check static/app.js: passed.
+- python -m compileall -q core app.py: passed.
+- git diff --check: passed.
+- Claude live eval command: **2/2 passed**; local report data/eval_report.json.
+- Codex live eval using the same evaluator with in-memory backend override: **2/2 passed**; local report data/live-codex/eval_report.json. No real config/profile changes.
+- API backends were unconfigured and therefore not live-verified. Their request/truncation/retry behavior was mocked in tests.
+- Codex JSONL model/usage and explicit startup model-line parsing were strengthened after the live run and tested using a fixture. The actual model version for that live Codex run remains unverified.
+- Successful live CLI calls verify invocation compatibility, not full isolation. No visual browser review, OS/container isolation test or comprehensive AI quality certification.
+- Existing test assertions were not loosened; task names and removed-parameter call sites were migrated while retaining their tier/isolation assertions.
+- Existing Windows pyreadline3 cleanup warnings sometimes appear after pytest passes; final test exit status was zero.
+
+See AI_CONTROL_REVIEW.md for the current control inventory and remaining priorities.

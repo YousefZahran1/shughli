@@ -101,27 +101,19 @@ MIT. See [LICENSE](LICENSE).
 
 ## AI execution and review controls
 
-All generation goes through `core/engine.py` and the central `core/policy.py` policy:
+Generation uses the central policy in `core/policy.py`: two concurrent slots, a 300-second generation deadline and two application-level attempts shared by transient API retries, JSON repair and custom token-parameter compatibility retries. Interactive tasks wait up to 20 seconds for capacity; background scoring waits against its deadline.
 
-- Two concurrent AI runs; excess requests fail with a retry message.
-- Two application-level attempts shared by API retries and JSON repair.
-- A 300-second overall generation deadline, checked before attempts and after responses. Each request/subprocess receives the remaining timeout. HTTP timeouts are transport timeouts, not a guarantee against every stalled or trickling server.
-- 80,000 input characters, 60,000 returned characters, and 4,096 requested output tokens for API calls. CLI output is checked after the process finishes. Provider/CLI internal retries and billing are outside this application's attempt accounting.
-- Claude requires safe mode, disabled tools/MCP/customizations and no session persistence. Unsupported flags fail without a weaker fallback.
-- Codex runs in a fresh directory with read-only sandbox, no approvals, no user config/rules, no session persistence, shell/unified execution, code mode, hooks and multi-agent features disabled, and web search disabled. This is CLI-level restriction, not an OS/container guarantee. Managed policies can still apply; use an API backend for a plain text request with no local agent process.
-- CV and job input are explicitly untrusted. System instructions forbid executing embedded instructions. These defenses reduce prompt injection risk; they do not prove immunity.
+A whole job search has one workflow ID, a 600-second budget and at most 12 scoring batches. Use **Cancel search** to stop waiting and discard late results. A provider/library request already in progress may continue until it returns or times out, and may still consume credit; it retains its generation slot until it returns.
 
-OpenAI requests use native strict JSON schemas for CV import, review, improvement and tailoring. All providers receive local normalized response validation. Scoring filters unknown/duplicate IDs, handles non-finite scores, and caps explicitly empty-description postings at 70. API/provider errors fail clearly; unsupported native schema models do not silently downgrade.
+The named tasks `score`, `import`, `review`, `improve`, `tailor` route through one table to fast/main tiers. Settings shows the effective tier models, including fallback when a fast model is unset. Requested API token budgets are 2,048 / 8,192 / 3,072 / 12,288 / 8,192 respectively; OpenAI reasoning models receive additional completion headroom. Explicit provider truncation raises a cut-off error instead of spending the JSON retry.
 
-CV coach improvements now open a before/after preview. **Accept and save** writes the profile and backs up the old version; **Reject changes** leaves the saved profile alone. Acceptance checks the original profile hash so a stale preview cannot overwrite later changes.
+Claude requires disabled tools/MCP/customizations and safe mode. Codex requests read-only, no-shell/no-web/no-hooks execution. Both generate from fresh directories. These are CLI restrictions, not an OS/container isolation guarantee. Unsupported options fail without a weaker fallback. CLI errors distinguish authentication, limits, unsupported flags, timeouts and other failures. Truncated raw diagnostic text is stored only in gitignored `data/private_debug/`; treat those files as sensitive.
 
-Tailoring only retains skills explicitly present in the candidate source and projects matching source identities. Source checks flag numbers absent from candidate evidence, include a source hash, and require human review. These conservative checks can flag legitimate rephrasing and cannot establish the truth of every sentence.
+Shared instructions classify CVs, answers and postings as untrusted data. APIs receive the instruction once in the system role; Claude receives it once as its system prompt and Codex once in stdin. Strict native OpenAI schemas and normalized local validation check response structure. These controls do not prove factuality or injection immunity.
 
-Scoring cache keys include authorization, prompt text/version, model/backend identity and job-content comparisons. Tailored packages and CV reviews also invalidate when relevant prompt/model/input changes. The first use after this update can therefore regenerate old results.
+CV coach changes require a before/after review and explicit acceptance. Tailoring normalizes skill names and selected aliases, preserves supported project identities/dates, and shows removed skills/projects separately. Numeric warnings and review notes are outside the cover letter so copying it includes only the letter.
 
-`data/ai_runs.jsonl` stores run IDs, UTC timestamps, backend/task identity, durations, attempt counts, parse outcomes and numeric usage where available. It omits CV text, generated text, API keys and provider error bodies. It rotates after approximately 2 MB and retains one previous file. Usage limits are **not a currency spending cap**; model/provider pricing and subscription billing differ.
-
-Run regression checks without using real profile data:
+Caches incorporate relevant input, prompt and model/backend identity. `data/ai_runs.jsonl` rotates private run metadata including workflow IDs, timings, attempts and provider-reported model/usage data when supplied. It excludes prompts, CV text, keys and raw error bodies. Missing actual-model metadata is labeled rather than guessed. Application usage limits are not a currency spending cap.
 
 ```powershell
 python -m pip install -r requirements.txt -r requirements-dev.txt
@@ -129,10 +121,10 @@ python -m pytest -q --basetemp=work/pytest
 node --check static/app.js
 ```
 
-Optional live AI quality checks use synthetic English and Arabic CVs with malicious job instructions:
+Optional synthetic English/Arabic quality checks use the selected backend and subscription/API credit:
 
 ```powershell
 python -m core.evals --live
 ```
 
-This command uses the selected provider and may consume subscription/API credit. Inspect `data/eval_report.json` for generated claims as well as automated checks. A passing report is a small regression signal, not a broad quality or safety certification.
+Review `data/eval_report.json`. See `AI_CONTROL_REVIEW.md` and `CHANGELOG_AI_HARDENING.md` for verification and remaining limitations.
