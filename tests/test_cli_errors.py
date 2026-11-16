@@ -42,3 +42,26 @@ def test_cli_timeout_debug(monkeypatch,tmp_data,backend):
     assert exc.value.category=='timeout'
     assert 'private partial' not in str(exc.value)
     assert list((tmp_data/'private_debug').glob('*.json'))
+
+@pytest.mark.parametrize('backend',['claude','codex'])
+def test_hit_limit_wording_classified(monkeypatch,backend):
+    monkeypatch.setattr(engine,'_which',lambda _:backend)
+    payload={'is_error':True,'result':"You've hit your limit - resets later"}
+    monkeypatch.setattr(engine,'_generation_process',lambda *a,**k:subprocess.CompletedProcess([],1,json.dumps(payload),''))
+    with pytest.raises(engine.EngineError) as exc:
+        getattr(engine,'_run_'+backend)('p',1,{})
+    assert exc.value.category=='rate_limit'
+
+
+def test_codex_reported_model_is_traced(monkeypatch,tmp_data):
+    monkeypatch.setattr(engine,'_which',lambda _:'codex')
+    output='\n'.join(json.dumps(e) for e in [
+        {'type':'turn.started','model':'actual-codex-model'},
+        {'type':'item.completed','item':{'type':'agent_message','text':'{}'}},
+        {'type':'turn.completed','usage':{'input_tokens':123,'output_tokens':5}},
+    ])
+    monkeypatch.setattr(engine,'_generation_process',lambda *a,**k:subprocess.CompletedProcess([],0,output,''))
+    engine.generate_json('p',cfg={'backend':'codex-cli'},task='review')
+    rows=[json.loads(line) for line in (tmp_data/'ai_runs.jsonl').read_text().splitlines()]
+    assert any(row.get('models')==['actual-codex-model'] for row in rows)
+    assert any(row.get('usage',{}).get('input_tokens')==123 for row in rows)

@@ -114,7 +114,7 @@ def _cli_failure(provider, stdout="", stderr="", timed_out=False):
         category = "auth_expired"
         login = "claude auth login" if provider == "claude" else "codex login"
         message = f"{provider.title()} session expired — run `{login}` in a terminal, then retry."
-    elif re.search(r"rate.?limit|usage.?limit|quota|credit|billing|429|overloaded|too many requests", low):
+    elif re.search(r"rate.?limit|usage.?limit|hit (?:your|the) limit|quota|credit|billing|429|overloaded|too many requests", low):
         category = "rate_limit"
         message = f"{provider.title()} usage or rate limit reached. Wait for reset or check your plan."
     elif re.search(r"unknown (?:option|argument)|unrecognized (?:option|argument)|unexpected argument|invalid option", stderr or "", re.I):
@@ -232,7 +232,12 @@ def _run_codex(prompt: str, timeout: int, cfg: dict, task: str = "main", budget=
     text = messages[-1] if messages else _ANSI.sub("", proc.stdout or "").strip()
     if not text:
         raise _cli_failure("codex", proc.stdout, proc.stderr)
-    return EngineResult(text=text, via="codex-cli")
+    models = tuple(dict.fromkeys(e["model"] for e in events if isinstance(e.get("model"), str)))
+    if not models:
+        reported = re.search(r"^model:\s*(\S+)", proc.stderr or "", re.M)
+        models = (reported.group(1),) if reported else ()
+    usage = next((e["usage"] for e in reversed(events) if isinstance(e.get("usage"), dict)), {})
+    return EngineResult(text=text, via="codex-cli", models=models, raw={"usage": usage})
 
 
 # ------------------------------------------------------------- APIs ----
