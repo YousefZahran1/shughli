@@ -31,7 +31,9 @@ _ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 
 
 class EngineError(policy.PolicyError):
-    pass
+    def __init__(self, message, category="other"):
+        super().__init__(message)
+        self.category = category
 
 
 @dataclass
@@ -84,6 +86,61 @@ def _generation_process(cmd, **kwargs):
         return subprocess.run(cmd, **kwargs)
 
 
+def _cli_json(stdout):
+    """Parse both a single envelope and Codex JSONL events before exit status."""
+    try:
+        value = json.loads(stdout)
+        return [value] if isinstance(value, dict) else []
+    except (ValueError, TypeError):
+        events = []
+        for line in (stdout or "").splitlines():
+            try:
+                value = json.loads(line)
+                if isinstance(value, dict):
+                    events.append(value)
+            except ValueError:
+                continue
+        return events
+
+
+def _cli_failure(provider, stdout="", stderr="", timed_out=False):
+    raw = json.dumps(_cli_json(stdout), ensure_ascii=False) + " " + (stderr or "")
+    low = raw.lower()
+    if timed_out or re.search(r"timed? ?out|timeout", low):
+        category = "timeout"
+        message = f"{provider.title()} CLI timed out. Try again."
+    elif re.search(r"oauth|authenticat|unauthorized|token.{0,30}expir|session.{0,30}expir|not logged in|please.{0,10}login|401", low):
+        category = "auth_expired"
+        login = "claude auth login" if provider == "claude" else "codex login"
+        message = f"{provider.title()} session expired — run `{login}` in a terminal, then retry."
+    elif re.search(r"rate.?limit|usage.?limit|quota|credit|billing|429|overloaded|too many requests", low):
+        category = "rate_limit"
+        message = f"{provider.title()} usage or rate limit reached. Wait for reset or check your plan."
+    elif re.search(r"unknown (?:option|argument)|unrecognized (?:option|argument)|unexpected argument|invalid option", stderr or "", re.I):
+        category = "unsupported_flag"
+        message = f"{provider.title()} CLI does not support a required isolation option. Update the CLI or choose an API backend."
+    else:
+        category = "other"
+        message = f"{provider.title()} generation failed. See the private local debug file for details."
+    # Deliberately separate raw diagnostics from user-visible errors and normal traces.
+    try:
+        directory = config.DATA_DIR / "private_debug"
+        directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+        path = directory / (provider + "-" + policy.uuid.uuid4().hex + ".json")
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump({"category": category, "stdout": str(stdout or "")[:8000],
+                       "stderr": str(stderr or "")[:8000]}, f, ensure_ascii=False)
+    except OSError:
+        pass
+    return EngineError(message, category)
+
+
+def _cli_has_error(events):
+    return any(e.get("is_error") or e.get("type") in {"error", "turn.failed"}
+               or e.get("error") for e in events)
+
+
 # ------------------------------------------------------------- Claude ----
 # Lean flags: the CLI otherwise loads the user's whole Claude Code setup (tools,
 # plugins, hooks, MCP servers, memory files) into every call (~40k tokens) and
@@ -128,30 +185,16 @@ def _run_claude(prompt: str, timeout: int, cfg: dict, task: str = "main", budget
                                   encoding="utf-8", errors="replace",
                                   cwd=_NEUTRAL_CWD, shell=(os.name == "nt"))
         except subprocess.TimeoutExpired as e:
-            raise EngineError(f"Claude CLI timed out after {timeout}s.") from e
+            raise _cli_failure("claude", e.stdout, e.stderr, timed_out=True) from None
 
     proc = call(True)
-    if proc.returncode != 0:
-        raise EngineError("Claude generation failed. Required isolation flags must be supported; update Claude CLI or select an API backend.")
-    out = (proc.stdout or "").strip()
-    if not out:
-        raise EngineError("Claude CLI returned nothing.")
-    try:
-        env = json.loads(out)
-    except json.JSONDecodeError:
-        m = re.search(r"\{.*\}\s*$", out, re.DOTALL)
-        if not m:
-            raise EngineError("Could not parse Claude CLI output.")
-        env = json.loads(m.group(0))
-    if env.get("is_error"):
-        res = str(env.get("result", ""))
-        if "oauth" in res.lower() or "authenticate" in res.lower():
-            raise EngineError("Claude session expired — run `claude auth login` "
-                              "(or `claude setup-token`) in a terminal, then retry.")
-        raise EngineError("Claude CLI returned an error.")
+    events = _cli_json(proc.stdout)
+    if _cli_has_error(events) or proc.returncode != 0:
+        raise _cli_failure("claude", proc.stdout, proc.stderr)
+    env = events[-1] if events else {}
     text = str(env.get("result", "")).strip()
     if not text:
-        raise EngineError("Claude CLI produced an empty result.")
+        raise _cli_failure("claude", proc.stdout, proc.stderr)
     return EngineResult(text=text, via="claude-cli", raw=env)
 
 
@@ -162,7 +205,7 @@ def _run_codex(prompt: str, timeout: int, cfg: dict, task: str = "main", budget=
     codex = _which("codex")
     if not codex:
         raise EngineError("`codex` CLI not found on PATH.")
-    cmd = [codex, "exec", "--skip-git-repo-check", "--ignore-user-config",
+    cmd = [codex, "exec", "--skip-git-repo-check", "--json", "--ignore-user-config",
            "--ignore-rules", "--ephemeral", "--sandbox", "read-only",
            "-c", 'approval_policy="never"', "-c", 'web_search="disabled"',
            "-c", 'features.shell_tool=false', "-c", 'features.unified_exec=false',
@@ -179,15 +222,15 @@ def _run_codex(prompt: str, timeout: int, cfg: dict, task: str = "main", budget=
                               timeout=timeout, encoding="utf-8", errors="replace",
                               cwd=_NEUTRAL_CWD, shell=(os.name == "nt"))
     except subprocess.TimeoutExpired as e:
-        raise EngineError(f"Codex CLI timed out after {timeout}s.") from e
-    if proc.returncode != 0:
-        err = (proc.stderr or "").strip()
-        if "login" in err.lower() or "auth" in err.lower():
-            raise EngineError("Codex session not authenticated — run `codex login` in a terminal.")
-        raise EngineError("Codex generation failed. Update the CLI if required isolation flags are unsupported, or select an API backend.")
-    text = _ANSI.sub("", proc.stdout or "").strip()
+        raise _cli_failure("codex", e.stdout, e.stderr, timed_out=True) from None
+    events = _cli_json(proc.stdout)
+    if _cli_has_error(events) or proc.returncode != 0:
+        raise _cli_failure("codex", proc.stdout, proc.stderr)
+    messages = [e["item"].get("text", "") for e in events
+                if e.get("type") == "item.completed" and e.get("item", {}).get("type") == "agent_message"]
+    text = messages[-1] if messages else _ANSI.sub("", proc.stdout or "").strip()
     if not text:
-        raise EngineError("Codex CLI produced no output.")
+        raise _cli_failure("codex", proc.stdout, proc.stderr)
     return EngineResult(text=text, via="codex-cli")
 
 
@@ -320,6 +363,8 @@ def generate(prompt: str, timeout: int = 300, cfg: dict | None = None,
                 except OSError:
                     pass
             return result
+    except EngineError:
+        raise
     except policy.PolicyError as e:
         raise EngineError(str(e)) from e
 
@@ -379,6 +424,8 @@ def generate_json(prompt: str, timeout: int = 300, cfg: dict | None = None, task
                                  model_fingerprint=policy.fingerprint(cfg, task), outcome=outcome)
                 except OSError:
                     pass  # Trace storage must not destroy a generated result.
+    except EngineError:
+        raise
     except policy.PolicyError as e:
         raise EngineError(str(e)) from e
 
