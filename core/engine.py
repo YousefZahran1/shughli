@@ -271,11 +271,13 @@ def _run_anthropic(prompt: str, timeout: int, cfg: dict, task: str = "main", bud
     r = _post("https://api.anthropic.com/v1/messages", budget,
               headers={"x-api-key": key, "anthropic-version": "2023-06-01",
                        "content-type": "application/json"},
-              json={"model": model, "max_tokens": policy.POLICY.max_output_tokens, "system": policy.SYSTEM,
+              json={"model": model, "max_tokens": policy.output_budget(task, model), "system": policy.SYSTEM,
                     "messages": [{"role": "user", "content": prompt}]},
               timeout=timeout)
     if r.status_code != 200:
         raise EngineError(f"Anthropic API request failed (HTTP {r.status_code}).")
+    if r.json().get("stop_reason") == "max_tokens":
+        raise EngineError("AI reply was cut off. Increase the task output budget or shorten the input.", "truncated")
     text = "".join(b.get("text", "") for b in r.json().get("content", [])
                    if b.get("type") == "text").strip()
     if not text:
@@ -288,7 +290,7 @@ def _run_openai(prompt: str, timeout: int, cfg: dict, task: str = "main", budget
     if not key:
         raise EngineError("No OpenAI API key set.")
     model = _model_for(cfg, "openai_model", task) or "gpt-5"
-    payload = {"model": model, "max_completion_tokens": policy.POLICY.max_output_tokens,
+    payload = {"model": model, "max_completion_tokens": policy.output_budget(task, model),
                "messages": [{"role": "system", "content": policy.SYSTEM}, {"role": "user", "content": prompt}]}
     schema = _RESPONSE_SCHEMA.get()
     if schema:
@@ -299,6 +301,8 @@ def _run_openai(prompt: str, timeout: int, cfg: dict, task: str = "main", budget
               json=payload, timeout=timeout)
     if r.status_code != 200:
         raise EngineError(f"OpenAI API request failed (HTTP {r.status_code}).")
+    if r.json()["choices"][0].get("finish_reason") == "length":
+        raise EngineError("AI reply was cut off. Increase the task output budget or shorten the input.", "truncated")
     text = (r.json()["choices"][0]["message"]["content"] or "").strip()
     if not text:
         raise EngineError("OpenAI API returned empty text.")
@@ -317,11 +321,21 @@ def _run_custom(prompt: str, timeout: int, cfg: dict, task: str = "main", budget
     headers = {"content-type": "application/json"}
     if key:
         headers["authorization"] = f"Bearer {key}"
-    r = _post(url, budget, headers=headers,
-              json={"model": model, "max_completion_tokens": policy.POLICY.max_output_tokens, "messages": [{"role": "system", "content": policy.SYSTEM}, {"role": "user", "content": prompt}]},
-              timeout=timeout)
+    budget = budget if budget is not None else {"retry": 1}
+    payload = {"model": model, "max_completion_tokens": policy.output_budget(task, model),
+               "messages": [{"role": "system", "content": policy.SYSTEM}, {"role": "user", "content": prompt}]}
+    r = _post(url, budget, headers=headers, json=payload, timeout=timeout)
+    if r.status_code == 400 and "max_completion_tokens" in r.text and budget["retry"] > 0:
+        budget["retry"] -= 1
+        if policy.current():
+            policy.current().attempt()
+        payload = dict(payload)
+        payload["max_tokens"] = payload.pop("max_completion_tokens")
+        r = _post(url, budget, headers=headers, json=payload, timeout=timeout)
     if r.status_code != 200:
         raise EngineError(f"Custom API request failed (HTTP {r.status_code}).")
+    if r.json()["choices"][0].get("finish_reason") == "length":
+        raise EngineError("AI reply was cut off. Increase the task output budget or shorten the input.", "truncated")
     text = (r.json()["choices"][0]["message"]["content"] or "").strip()
     if not text:
         raise EngineError("Custom API returned empty text.")

@@ -25,8 +25,17 @@ class RunPolicy:
     timeout_seconds: int = 300
     max_input_chars: int = 80000
     max_output_chars: int = 60000
-    max_output_tokens: int = 4096
     max_attempts: int = 2
+
+# Visible-answer budgets; reasoning models receive additional completion headroom.
+OUTPUT_TOKENS = {"score": 2048, "import": 8192, "review": 3072,
+                 "improve": 12288, "tailor": 8192}
+
+def output_budget(task, model=""):
+    task = {"main": "tailor", "fast": "score"}.get(task, task)
+    visible = OUTPUT_TOKENS[task]
+    reasoning = str(model).lower().startswith(("gpt-5", "o1", "o3", "o4"))
+    return max(16384, visible * 3) if reasoning else visible
 
 POLICY = RunPolicy()
 _active = ContextVar("ai_run", default=None)
