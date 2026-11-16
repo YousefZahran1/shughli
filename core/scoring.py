@@ -8,7 +8,6 @@ and jobs that were not scored stay `score: None` — never a fake 0.
 from __future__ import annotations
 
 import math
-import hashlib
 import json
 import re
 

@@ -147,7 +147,7 @@ def _cli_has_error(events):
 # plugins, hooks, MCP servers, memory files) into every call (~40k tokens) and
 # their own instructions can leak into generated CVs. Measured on CLI 2.1.268.
 # Not --bare: that disables OAuth and would break subscription login.
-_CLAUDE_SYSTEM = "You are a text-generation backend. Output only what is asked, nothing else."
+_CLAUDE_SYSTEM = policy.SYSTEM
 _CLAUDE_LEAN = ["--tools", "", "--strict-mcp-config", "--safe-mode", "--no-session-persistence",
                 "--disable-slash-commands", "--system-prompt", _CLAUDE_SYSTEM]
 
@@ -163,7 +163,7 @@ def _model_for(cfg: dict, main_key: str, task: str) -> str:
     return cfg.get(main_key) or ""
 
 
-def _claude_cmd(claude: str, cfg: dict, task: str, lean: bool) -> list[str]:
+def _claude_cmd(claude: str, cfg: dict, task: str) -> list[str]:
     cmd = [claude, "-p", "--output-format", "json"]
     cmd += _CLAUDE_LEAN  # Required isolation: never fall back to weaker flags.
     model = _model_for(cfg, "claude_model", task)
@@ -179,16 +179,16 @@ def _run_claude(prompt: str, timeout: int, cfg: dict, task: str = "main", budget
     if not claude:
         raise EngineError("`claude` CLI not found on PATH.")
 
-    def call(lean: bool):
+    def call():
         try:
-            return _generation_process(_claude_cmd(claude, cfg, task, lean), input=prompt,
+            return _generation_process(_claude_cmd(claude, cfg, task), input=prompt,
                                   capture_output=True, text=True, timeout=timeout,
                                   encoding="utf-8", errors="replace",
-                                  cwd=_NEUTRAL_CWD, shell=(os.name == "nt"))
+                                  shell=(os.name == "nt"))
         except subprocess.TimeoutExpired as e:
             raise _cli_failure("claude", e.stdout, e.stderr, timed_out=True) from None
 
-    proc = call(True)
+    proc = call()
     events = _cli_json(proc.stdout)
     if _cli_has_error(events) or proc.returncode != 0:
         raise _cli_failure("claude", proc.stdout, proc.stderr)
@@ -219,9 +219,9 @@ def _run_codex(prompt: str, timeout: int, cfg: dict, task: str = "main", budget=
         cmd += ["-m", model]
     cmd += ["-"]  # read prompt from stdin
     try:
-        proc = _generation_process(cmd, input=prompt, capture_output=True, text=True,
+        proc = _generation_process(cmd, input=policy.SYSTEM + "\n\n" + prompt, capture_output=True, text=True,
                               timeout=timeout, encoding="utf-8", errors="replace",
-                              cwd=_NEUTRAL_CWD, shell=(os.name == "nt"))
+                              shell=(os.name == "nt"))
     except subprocess.TimeoutExpired as e:
         raise _cli_failure("codex", e.stdout, e.stderr, timed_out=True) from None
     events = _cli_json(proc.stdout)
@@ -367,7 +367,7 @@ def generate(prompt: str, timeout: int = 300, cfg: dict | None = None,
     try:
         with policy.scope(timeout, background=(task == "score")) as run:
             run.attempt()
-            result = _RUNNERS[backend](policy.SYSTEM + "\n\n" + prompt, run.remaining(), cfg, task, _budget)
+            result = _RUNNERS[backend](prompt, run.remaining(), cfg, task, _budget)
             run.remaining()
             if len(result.text) > policy.POLICY.max_output_chars:
                 raise EngineError("AI output exceeded the size limit.")

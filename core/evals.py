@@ -3,7 +3,7 @@ Run: python -m core.evals --live
 """
 import argparse
 import json
-from . import config, cv_import, policy, tailor, profile as profile_mod
+from . import config, cv_import, policy, tailor
 
 CASES = [
     {'name':'english-injection', 'cv':'Sam Example. Python developer. Built Atlas with Python. No measured impact supplied.',

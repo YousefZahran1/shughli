@@ -302,11 +302,11 @@ def test_api_retry_shares_budget(monkeypatch):
 
 def test_claude_command_lean_and_model_tiers():
     cfg = config.DEFAULT_CONFIG
-    fast = engine._claude_cmd("claude", cfg, "fast", True)
-    main = engine._claude_cmd("claude", cfg, "main", True)
+    fast = engine._claude_cmd("claude", cfg, "fast")
+    main = engine._claude_cmd("claude", cfg, "main")
     assert "--strict-mcp-config" in fast and "--safe-mode" in fast and "--bare" not in fast
     assert fast[fast.index("--model") + 1] == "haiku" and "--model" not in main
-    old = engine._claude_cmd("claude", cfg, "main", False)
+    old = engine._claude_cmd("claude", cfg, "main")
     assert "--tools" in old and "--safe-mode" in old  # isolation never downgraded
 
 
