@@ -309,6 +309,7 @@ $("#settings-save").onclick = saveSettings;
 
 // ================= JOBS =================
 let pollTimer = null;
+let SEARCH_ID = null;
 async function startFetch() {
   $("#fetch-btn").disabled = true; $("#fetch-panel").classList.remove("hidden");
   $("#fetch-title").innerHTML = '<span class="spin"></span>Fetching + scoring…';
@@ -326,6 +327,9 @@ function resumeFetch() {   // page was reloaded while a fetch was running
 async function pollLog() {
   let d;
   try { d = await (await fetch("/api/fetch/log")).json(); } catch { return; }
+  SEARCH_ID = d.workflow_id;
+  $("#fetch-cancel").disabled = !d.running || d.cancelling;
+  $("#fetch-cancel").textContent = d.cancelling ? "Cancelling…" : "Cancel search";
   $("#fetch-log").textContent = d.log.join("\n"); $("#fetch-log").scrollTop = 1e9;
   if (!d.running) {
     clearInterval(pollTimer); $("#fetch-btn").disabled = false;
@@ -466,6 +470,12 @@ $("#cvmodal-apply").onclick = applyImprovements;
 $("#cvmodal").onclick = e => { if (e.target.id === "cvmodal") $("#cvmodal").classList.add("hidden"); };
 
 $("#fetch-btn").onclick = startFetch;
+$("#fetch-cancel").onclick = async () => {
+  await pollLog();
+  const result = await (await fetch("/api/fetch/cancel", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ workflow_id: SEARCH_ID }) })).json();
+  if (!result.ok) $("#fetch-title").textContent = result.msg;
+  await pollLog();
+};
 $("#fetch-close").onclick = () => $("#fetch-panel").classList.add("hidden");
 $("#drawer-close").onclick = () => $("#drawer").classList.add("hidden");
 $("#drawer").onclick = e => { if (e.target.id === "drawer") $("#drawer").classList.add("hidden"); };

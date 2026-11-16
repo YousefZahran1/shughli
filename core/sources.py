@@ -20,7 +20,7 @@ import traceback
 
 import requests
 
-from . import filters
+from . import policy, filters
 
 
 def _str(v) -> str:
@@ -274,13 +274,17 @@ def collect(profile: dict, cfg: dict, log=print) -> list[dict]:
     prefs = profile.get("preferences", {})
     src = cfg.get("sources", {})
     raw: list[dict] = []
+    policy.check_workflow()
     if src.get("jobspy", True):
         raw += from_jobspy(prefs, cfg, log=log)
+    policy.check_workflow()
     if src.get("remotive", True):
         raw += from_remotive(prefs, log=log)
+    policy.check_workflow()
     if src.get("arbeitnow", True) and map_country(prefs.get("target_country", "")) == "germany":
         raw += from_arbeitnow(prefs, log=log)
 
+    policy.check_workflow()
     kept = [j for j in raw if filters.passes(j, prefs)]
     out = [filters.annotate(j) for j in dedupe(kept)]
     log(f"Collected {len(out)} eligible unique jobs (from {len(raw)} raw).")

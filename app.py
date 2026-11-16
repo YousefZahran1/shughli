@@ -32,7 +32,7 @@ for _s in (sys.stdout, sys.stderr):
 app = Flask(__name__, static_folder="static", static_url_path="")
 app.config["MAX_CONTENT_LENGTH"] = 10 * 1024 * 1024
 
-_fetch = {"running": False, "log": [], "count": 0, "error": None}
+_fetch = {"running": False, "log": [], "count": 0, "error": None, "workflow": None}
 _lock = threading.Lock()
 
 
@@ -62,31 +62,36 @@ def _reject_cross_origin_posts():
 
 def _run_fetch(do_score: bool) -> None:
     # `running` is set by start_fetch under the lock, before this thread starts.
-    try:
-        cfg, prof = config.load_config(), profile_mod.load_profile()
-        old_jobs = _load_cache()
-        _log("Fetching jobs…")
-        jobs = sources.collect(prof, cfg, log=_log)
-        if do_score and jobs:
-            if engine.resolve_backend(cfg) == "none":
-                _log("⚠ No AI backend — skipping scoring (jobs still listed).")
-                jobs = scoring.apply_scores(jobs, {})
+    flow = _fetch.get("workflow") or policy.Workflow()
+    with policy.workflow_scope(flow):
+        try:
+            policy.check_workflow()
+            cfg, prof = config.load_config(), profile_mod.load_profile()
+            old_jobs = _load_cache()
+            _log("Fetching jobs…")
+            jobs = sources.collect(prof, cfg, log=_log)
+            policy.check_workflow()
+            if do_score and jobs:
+                if engine.resolve_backend(cfg) == "none":
+                    _log("⚠ No AI backend — skipping scoring (jobs still listed).")
+                    jobs = scoring.apply_scores(jobs, {})
+                else:
+                    _log(f"Scoring via {engine.resolve_backend(cfg)}…")
+                    jobs = scoring.run(jobs, prof, old_jobs, cfg, log=_log)
             else:
-                _log(f"Scoring via {engine.resolve_backend(cfg)}…")
-                jobs = scoring.run(jobs, prof, old_jobs, cfg, log=_log)
-        else:
-            jobs = scoring.apply_scores(jobs, {})
-        _save_cache(jobs)
-        with _lock:
-            _fetch["count"] = len(jobs)
-        _log(f"Done. {len(jobs)} jobs cached.")
-    except Exception as e:  # noqa: BLE001
-        _log(f"ERROR: {e}")
-        with _lock:
-            _fetch["error"] = str(e)
-    finally:
-        with _lock:
-            _fetch["running"] = False
+                jobs = scoring.apply_scores(jobs, {})
+            policy.check_workflow()
+            _save_cache(jobs)
+            with _lock:
+                _fetch["count"] = len(jobs)
+            _log(f"Done. {len(jobs)} jobs cached.")
+        except Exception as e:  # noqa: BLE001
+            _log(f"ERROR: {e}")
+            with _lock:
+                _fetch["error"] = str(e)
+        finally:
+            with _lock:
+                _fetch["running"] = False
 
 
 # ---------------------------------------------------------------- routes ----
@@ -318,17 +323,32 @@ def start_fetch():
     with _lock:   # check-and-set in one block so two clicks cannot both start a fetch
         if _fetch["running"]:
             return jsonify({"ok": False, "msg": "Fetch already running."}), 409
-        _fetch.update(running=True, log=[], count=0, error=None)
+        _fetch.update(running=True, log=[], count=0, error=None, workflow=policy.Workflow())
     threading.Thread(target=_run_fetch, kwargs={"do_score": body.get("score", True)},
                      daemon=True).start()
-    return jsonify({"ok": True})
+    return jsonify({"ok": True, "workflow_id": _fetch["workflow"].id})
+
+
+@app.post("/api/fetch/cancel")
+def cancel_fetch():
+    body = request.get_json(silent=True) or {}
+    with _lock:
+        flow = _fetch.get("workflow")
+        if not _fetch["running"] or not flow:
+            return jsonify({"ok": False, "msg": "No search is running."}), 409
+        if body.get("workflow_id") != flow.id:
+            return jsonify({"ok": False, "msg": "Search changed. Refresh its status."}), 409
+        flow.cancel.set()
+    return jsonify({"ok": True, "msg": "Cancellation requested."})
 
 
 @app.get("/api/fetch/log")
 def fetch_log():
     with _lock:
         return jsonify({"running": _fetch["running"], "log": _fetch["log"][-100:],
-                        "error": _fetch["error"], "count": _fetch["count"]})
+                        "error": _fetch["error"], "count": _fetch["count"],
+                        "workflow_id": _fetch["workflow"].id if _fetch.get("workflow") else None,
+                        "cancelling": bool(_fetch.get("workflow") and _fetch["workflow"].cancel.is_set())})
 
 
 @app.get("/api/jobs")

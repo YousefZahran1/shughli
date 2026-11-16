@@ -138,6 +138,9 @@ def score_jobs(jobs: list[dict], profile: dict, cfg=None, log=print) -> dict[str
     seniority = profile.get("preferences", {}).get("seniority", [])
     results: dict[str, dict] = {}
     for i in range(0, len(jobs), BATCH):
+        policy.check_workflow()
+        if policy.workflow():
+            policy.workflow().next_batch()
         batch = jobs[i:i + BATCH]
         try:
             data = engine.generate_json(_prompt(cv, wa, batch, seniority), cfg=cfg, task="score")
@@ -154,6 +157,9 @@ def score_jobs(jobs: list[dict], profile: dict, cfg=None, log=print) -> dict[str
                         reason = "title only: " + reason
                     results[jid] = {"score": score, "reason": reason}
             log(f"Scored batch {i // BATCH + 1} ({len(batch)}).")
+        except policy.PolicyError as e:
+            policy.check_workflow()
+            log(f"Scoring batch {i // BATCH + 1} failed: {e}")
         except Exception as e:  # noqa: BLE001
             log(f"Scoring batch {i // BATCH + 1} failed: {e}")
     return results
