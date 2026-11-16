@@ -63,13 +63,18 @@ def _reject_cross_origin_posts():
 def _run_fetch(do_score: bool) -> None:
     # `running` is set by start_fetch under the lock, before this thread starts.
     flow = _fetch.get("workflow") or policy.Workflow()
+    def workflow_log(message):
+        with _lock:
+            if _fetch.get("workflow") is not flow or flow.cancel.is_set() or time.monotonic() >= flow.deadline:
+                return
+            _fetch["log"].append(f"{time.strftime('%H:%M:%S')}  {message}")
     with policy.workflow_scope(flow):
         try:
             policy.check_workflow()
             cfg, prof = config.load_config(), profile_mod.load_profile()
             old_jobs = _load_cache()
             _log("Fetching jobs…")
-            jobs = sources.collect(prof, cfg, log=_log)
+            jobs = policy.interruptible(lambda: sources.collect(prof, cfg, log=workflow_log))
             policy.check_workflow()
             if do_score and jobs:
                 if engine.resolve_backend(cfg) == "none":
@@ -77,7 +82,7 @@ def _run_fetch(do_score: bool) -> None:
                     jobs = scoring.apply_scores(jobs, {})
                 else:
                     _log(f"Scoring via {engine.resolve_backend(cfg)}…")
-                    jobs = scoring.run(jobs, prof, old_jobs, cfg, log=_log)
+                    jobs = policy.interruptible(lambda: scoring.run(jobs, prof, old_jobs, cfg, log=workflow_log))
             else:
                 jobs = scoring.apply_scores(jobs, {})
             policy.check_workflow()

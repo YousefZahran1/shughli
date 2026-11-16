@@ -38,3 +38,37 @@ def test_cancel_endpoint(client):
         assert c.get('/api/fetch/log').get_json()['workflow_id']==flow.id
     finally:
         appmod._fetch.update(running=False,workflow=None)
+
+def test_cancel_interrupts_source_collection(client,monkeypatch):
+    c,appmod=client
+    flow=policy.Workflow()
+    entered=threading.Event(); release=threading.Event()
+    def collect(*a,**kw):
+        entered.set(); release.wait(2); return []
+    monkeypatch.setattr(appmod.sources,'collect',collect)
+    appmod._fetch.update(running=True,workflow=flow,error=None)
+    thread=threading.Thread(target=appmod._run_fetch,args=(False,))
+    thread.start()
+    assert entered.wait(1)
+    flow.cancel.set()
+    thread.join(.5)
+    try:
+        assert not thread.is_alive()
+        assert 'cancel' in appmod._fetch['error'].lower()
+    finally:
+        release.set(); thread.join(2)
+
+
+def test_deadline_interrupts_source_collection(client,monkeypatch):
+    import time
+    c,appmod=client
+    flow=policy.Workflow(deadline=time.monotonic()+.1)
+    release=threading.Event()
+    monkeypatch.setattr(appmod.sources,'collect',lambda *a,**kw:release.wait(2) or [])
+    appmod._fetch.update(running=True,workflow=flow,error=None)
+    thread=threading.Thread(target=appmod._run_fetch,args=(False,)); thread.start(); thread.join(.5)
+    try:
+        assert not thread.is_alive()
+        assert 'deadline' in appmod._fetch['error'].lower()
+    finally:
+        release.set(); thread.join(2)

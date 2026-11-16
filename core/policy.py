@@ -3,11 +3,12 @@ from __future__ import annotations
 from datetime import datetime, timezone
 import hashlib
 import json
+import queue
 import threading
 import time
 import uuid
 from contextlib import contextmanager
-from contextvars import ContextVar
+from contextvars import ContextVar, copy_context
 from dataclasses import dataclass, field
 from . import config
 
@@ -55,6 +56,35 @@ def check_workflow():
     flow = workflow()
     if flow:
         flow.check()
+
+def interruptible(function):
+    """Stop the workflow promptly even if a library call cannot be interrupted.
+
+    The worker retains its own context and AI slot until it actually returns;
+    its late result cannot be saved by the cancelled parent workflow.
+    """
+    flow = workflow()
+    if flow is None:
+        return function()
+    flow.check()
+    result = queue.Queue(maxsize=1)
+    context = copy_context()
+    def work():
+        try:
+            result.put((True, context.run(function)))
+        except Exception as exc:
+            result.put((False, exc))
+    threading.Thread(target=work, daemon=True).start()
+    while True:
+        flow.check()
+        try:
+            ok, value = result.get(timeout=min(.1, max(.001, flow.deadline-time.monotonic())))
+        except queue.Empty:
+            continue
+        flow.check()
+        if ok:
+            return value
+        raise value
 
 class PolicyError(RuntimeError):
     pass
