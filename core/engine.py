@@ -350,7 +350,7 @@ def generate(prompt: str, timeout: int = 300, cfg: dict | None = None,
     if backend not in _RUNNERS:
         raise EngineError("No supported AI backend available. Select a backend in Settings.")
     try:
-        with policy.scope(timeout) as run:
+        with policy.scope(timeout, background=(task in {"fast", "score"})) as run:
             run.attempt()
             result = _RUNNERS[backend](policy.SYSTEM + "\n\n" + prompt, run.remaining(), cfg, task, _budget)
             run.remaining()
@@ -401,7 +401,7 @@ def generate_json(prompt: str, timeout: int = 300, cfg: dict | None = None, task
     first), so the worst case is two calls and cost stays bounded."""
     cfg = config.load_config() if cfg is None else cfg
     try:
-        with policy.scope(timeout) as run:
+        with policy.scope(timeout, background=(task in {"fast", "score"})) as run:
             schema_token = _RESPONSE_SCHEMA.set(schema)
             outcome = "failed"
             try:

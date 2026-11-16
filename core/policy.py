@@ -51,14 +51,17 @@ class Run:
         self.attempts += 1
 
 @contextmanager
-def scope(timeout=300):
+def scope(timeout=300, background=False):
     current = _active.get()
     if current:
         yield current
         return
-    if not _gate.acquire(blocking=False):
+    started = time.monotonic()
+    deadline = started + min(timeout, POLICY.timeout_seconds)
+    wait = max(0, deadline - time.monotonic())
+    if not _gate.acquire(timeout=wait if background else min(20.0, wait)):
         raise PolicyError("Two AI tasks are already running. Try again when one finishes.")
-    run = Run(uuid.uuid4().hex, time.monotonic(), time.monotonic() + min(timeout, POLICY.timeout_seconds))
+    run = Run(uuid.uuid4().hex, started, deadline)
     token = _active.set(run)
     try:
         yield run
