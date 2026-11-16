@@ -17,7 +17,7 @@ from pathlib import Path
 from docx import Document
 from docx.shared import Inches, Pt, RGBColor
 
-from . import config, engine, profile as profile_mod
+from . import policy, validation, config, engine, profile as profile_mod
 from .textutil import excerpt
 
 DARK, ACCENT, MUTED = RGBColor(0x1F, 0x29, 0x37), RGBColor(0x0F, 0x4C, 0x81), RGBColor(0x4B, 0x55, 0x63)
@@ -212,19 +212,19 @@ def _norm_projects(raw) -> list[dict]:
 
 
 def _nm(s: str) -> str:
-    return re.sub(r"[^a-z0-9]+", " ", _str(s).lower()).strip()
+    return re.sub(r"[\W_]+", " ", _str(s).lower()).strip()
 
 
 def _ground_projects(projects: list[dict], profile: dict) -> list[dict]:
     """Keep only projects that match a profile project by name; take dates from the profile."""
     prof_projects = [p for p in profile.get("projects", []) if _str(p.get("name"))]
     if not prof_projects:
-        return projects
+        return []
     kept = []
     for pr in projects:
         h = _nm(pr["header"])
         match = next((pp for pp in prof_projects
-                      if _nm(pp["name"]) and (h.startswith(_nm(pp["name"])) or _nm(pp["name"]) in h)), None)
+                      if _nm(pp["name"]) and (h == _nm(pp["name"]) or h.startswith(_nm(pp["name"]) + " "))), None)
         if match:
             pr = dict(pr, date=_str(match.get("dates")))
             kept.append(pr)
@@ -236,16 +236,15 @@ def _ground_projects(projects: list[dict], profile: dict) -> list[dict]:
 
 
 def _ground_skills(skills: list[list[str]], cv_text: str, job_desc: str, log=print) -> list[list[str]]:
-    """Drop a skill item only when it is absent from the CV AND present in the job
-    description (the signature of a skill copied from the posting)."""
-    cv_l, jd_l = cv_text.lower(), (job_desc or "").lower()
+    """Keep only skill items explicitly present in candidate source text."""
+    cv_l = cv_text.lower()
     out = []
     for label, items in skills:
         keep = []
         for item in _split_items(items):
             low = item.lower()
-            if low not in cv_l and low in jd_l:
-                log(f"tailor: dropped skill not in CV but in the posting: {item}")
+            if low not in cv_l:
+                log("tailor: dropped an unsupported skill")
                 continue
             keep.append(item)
         if keep:
@@ -255,12 +254,14 @@ def _ground_skills(skills: list[list[str]], cv_text: str, job_desc: str, log=pri
 
 def generate(job: dict, profile: dict, cfg=None) -> dict:
     cv = profile_mod.as_cv_text(profile)
-    data = engine.generate_json(_gen_prompt(cv, job, profile), cfg=cfg, timeout=300, task="main")
+    data = engine.generate_json(_gen_prompt(cv, job, profile), cfg=cfg, timeout=300, task="main", schema=validation.TAILOR_SCHEMA)
     if not isinstance(data, dict):
         raise engine.EngineError("Generation returned an unexpected shape.")
     for key in ("summary", "skills", "cover_letter"):
         if key not in data:
             raise engine.EngineError(f"Generation missing '{key}'.")
+    validation.content(data)
+    data["source_checks"] = validation.source_checks(json.dumps(data, ensure_ascii=False), cv)
     data["summary"] = clean_prose(data.get("summary"))
     data["cover_letter"] = clean_prose(strip_letter_frame(_str(data.get("cover_letter"))))
     data["skills"] = _ground_skills(_norm_skills(data.get("skills")), cv, job.get("description", ""))
@@ -268,6 +269,7 @@ def generate(job: dict, profile: dict, cfg=None) -> dict:
     fit = data.get("fit") if isinstance(data.get("fit"), dict) else {}
     data["fit"] = {k: [_str(x) for x in (fit.get(k) or []) if _str(x)] if isinstance(fit.get(k), list) else []
                    for k in ("matches", "gaps")}
+    validation.schema_check({k: data[k] for k in validation.TAILOR_SCHEMA["properties"]}, validation.TAILOR_SCHEMA)
     return data
 
 
@@ -407,10 +409,10 @@ def package_folder(job: dict) -> Path:
     return config.APPS_DIR / f"{comp}-{_slug(job.get('title'))}-{_slug(job.get('id'))}"
 
 
-def load_saved_package(job: dict, profile: dict) -> dict | None:
+def load_saved_package(job: dict, profile: dict, cfg=None) -> dict | None:
     f = package_folder(job) / "package.json"
     saved = config.read_json(f, None)
-    if isinstance(saved, dict) and saved.get("profile_hash") == profile_hash(profile) \
+    if isinstance(saved, dict) and saved.get("cache_key") == package_key(job, profile, cfg) \
             and isinstance(saved.get("package"), dict):
         pkg = saved["package"]
         if Path(pkg.get("cv_docx", "")).exists() and Path(pkg.get("cover_docx", "")).exists():
@@ -422,7 +424,7 @@ def build_package(job: dict, profile: dict, cfg=None, force: bool = False) -> di
     """Generate (or return the saved) package. A saved one is reused when the
     profile is unchanged, unless force=True."""
     if not force:
-        saved = load_saved_package(job, profile)
+        saved = load_saved_package(job, profile, cfg)
         if saved:
             return saved
     gen = generate(job, profile, cfg=cfg)
@@ -433,10 +435,14 @@ def build_package(job: dict, profile: dict, cfg=None, force: bool = False) -> di
     render_cv_docx(gen, job, profile, cv_path)
     render_cover_docx(gen.get("cover_letter", ""), job, profile, cl_path)
     config.atomic_write_json(folder / "job.json", job)
-    pkg = {"summary": gen.get("summary", ""), "skills": gen.get("skills", []),
+    pkg = {"source_checks": gen["source_checks"], "summary": gen.get("summary", ""), "skills": gen.get("skills", []),
            "projects": gen.get("projects", []), "cover_letter": gen.get("cover_letter", ""),
            "fit": gen.get("fit", {}), "cv_docx": str(cv_path), "cover_docx": str(cl_path),
            "folder": str(folder)}
     config.atomic_write_json(folder / "package.json",
-                             {"profile_hash": profile_hash(profile), "job_id": job.get("id"), "package": pkg})
+                             {"cache_key": package_key(job, profile, cfg), "profile_hash": profile_hash(profile), "job_id": job.get("id"), "package": pkg})
     return pkg
+
+
+def package_key(job, profile, cfg=None):
+    return policy.digest([profile, job, _PROMPT, policy.fingerprint(cfg)])

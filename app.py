@@ -20,7 +20,7 @@ from urllib.parse import urlparse
 from flask import Flask, jsonify, request, send_file, send_from_directory
 from werkzeug.utils import secure_filename
 
-from core import (config, cv_coach, cv_import, engine, profile as profile_mod,
+from core import (policy, validation, config, cv_coach, cv_import, engine, profile as profile_mod,
                   scoring, sources, tailor)
 
 for _s in (sys.stdout, sys.stderr):
@@ -30,6 +30,7 @@ for _s in (sys.stdout, sys.stderr):
         pass
 
 app = Flask(__name__, static_folder="static", static_url_path="")
+app.config["MAX_CONTENT_LENGTH"] = 10 * 1024 * 1024
 
 _fetch = {"running": False, "log": [], "count": 0, "error": None}
 _lock = threading.Lock()
@@ -172,12 +173,16 @@ def cv_review():
 
 @app.post("/api/cv/improve")
 def cv_improve():
-    qa = (request.get_json(silent=True) or {}).get("qa", [])
+    body = request.get_json(silent=True)
+    if not isinstance(body, dict):
+        return jsonify({"ok": False, "msg": "Expected a JSON object."}), 400
+    qa = body.get("qa", [])
     try:
-        improved = cv_coach.improve(profile_mod.load_profile(), qa)
-        profile_mod.backup_profile()
-        saved = profile_mod.save_profile(improved)
-        return jsonify({"ok": True, "profile": saved})
+        source = profile_mod.load_profile()
+        improved = cv_coach.improve(source, qa)
+        checks = validation.source_checks(profile_mod.as_cv_text(improved), profile_mod.as_cv_text(source) + json.dumps(qa, ensure_ascii=False))
+        return jsonify({"ok": True, "profile": improved, "before": source,
+                        "base_hash": policy.digest(source), "source_checks": checks})
     except engine.EngineError as e:
         return jsonify({"ok": False, "msg": str(e)}), 502
 
@@ -189,7 +194,13 @@ def get_profile():
 
 @app.post("/api/profile")
 def save_profile():
-    body = request.get_json(silent=True) or {}
+    body = request.get_json(silent=True)
+    if not isinstance(body, dict):
+        return jsonify({"ok": False, "msg": "Expected a JSON object."}), 400
+    base_hash = body.pop("_base_hash", None)
+    if base_hash and base_hash != policy.digest(profile_mod.load_profile()):
+        return jsonify({"ok": False, "msg": "Profile changed while reviewing. Reload and try again."}), 409
+    profile_mod.backup_profile()
     return jsonify({"ok": True, "profile": profile_mod.save_profile(body)})
 
 

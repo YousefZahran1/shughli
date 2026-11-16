@@ -7,8 +7,8 @@ Runs text generation on whichever AI the user has, in priority order:
   4. OpenAI API        (OPENAI_API_KEY)       -> billed per use
 
 No API key is required for the CLI paths — they use the subscription the user is
-already logged into. CLI calls run from a neutral working dir with tools
-disabled, so they don't inherit any surrounding project's instructions.
+already logged into. CLI generation uses fresh working directories and explicit isolation flags.
+Unsupported isolation flags fail closed; no weaker compatibility retry is used.
 """
 from __future__ import annotations
 
@@ -20,15 +20,17 @@ import subprocess
 import tempfile
 import time
 from dataclasses import dataclass
+from contextvars import ContextVar
 
-from . import config
+from . import config, policy
+
+_RESPONSE_SCHEMA = ContextVar("response_schema", default=None)
 
 _NEUTRAL_CWD = tempfile.gettempdir()
-_CLAUDE_NO_TOOLS = "Bash Read Edit Write WebFetch WebSearch Task Glob Grep NotebookEdit"
 _ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 
 
-class EngineError(RuntimeError):
+class EngineError(policy.PolicyError):
     pass
 
 
@@ -75,6 +77,13 @@ def resolve_backend(cfg: dict | None = None) -> str:
     return "none"
 
 
+def _generation_process(cmd, **kwargs):
+    # A fresh directory prevents discovery of unrelated files in the shared temp root.
+    with tempfile.TemporaryDirectory(prefix="job-cockpit-ai-") as cwd:
+        kwargs["cwd"] = cwd
+        return subprocess.run(cmd, **kwargs)
+
+
 # ------------------------------------------------------------- Claude ----
 # Lean flags: the CLI otherwise loads the user's whole Claude Code setup (tools,
 # plugins, hooks, MCP servers, memory files) into every call (~40k tokens) and
@@ -83,7 +92,7 @@ def resolve_backend(cfg: dict | None = None) -> str:
 _CLAUDE_SYSTEM = "You are a text-generation backend. Output only what is asked, nothing else."
 _CLAUDE_LEAN = ["--tools", "", "--strict-mcp-config", "--safe-mode", "--no-session-persistence",
                 "--disable-slash-commands", "--system-prompt", _CLAUDE_SYSTEM]
-_claude_lean_ok = True   # flips to False for the life of the process if the CLI rejects the flags
+
 
 
 def _model_for(cfg: dict, main_key: str, task: str) -> str:
@@ -98,50 +107,48 @@ def _model_for(cfg: dict, main_key: str, task: str) -> str:
 
 def _claude_cmd(claude: str, cfg: dict, task: str, lean: bool) -> list[str]:
     cmd = [claude, "-p", "--output-format", "json"]
-    cmd += _CLAUDE_LEAN if lean else ["--disallowed-tools", _CLAUDE_NO_TOOLS]
+    cmd += _CLAUDE_LEAN  # Required isolation: never fall back to weaker flags.
     model = _model_for(cfg, "claude_model", task)
+    if model and not re.fullmatch(r"[A-Za-z0-9_./:@+-]{1,200}", model):
+        raise EngineError("Invalid CLI model name.")
     if model:
         cmd += ["--model", model]
     return cmd
 
 
 def _run_claude(prompt: str, timeout: int, cfg: dict, task: str = "main", budget=None) -> EngineResult:
-    global _claude_lean_ok
     claude = _which("claude")
     if not claude:
         raise EngineError("`claude` CLI not found on PATH.")
 
     def call(lean: bool):
         try:
-            return subprocess.run(_claude_cmd(claude, cfg, task, lean), input=prompt,
+            return _generation_process(_claude_cmd(claude, cfg, task, lean), input=prompt,
                                   capture_output=True, text=True, timeout=timeout,
                                   encoding="utf-8", errors="replace",
                                   cwd=_NEUTRAL_CWD, shell=(os.name == "nt"))
         except subprocess.TimeoutExpired as e:
             raise EngineError(f"Claude CLI timed out after {timeout}s.") from e
 
-    proc = call(_claude_lean_ok)
-    if _claude_lean_ok and proc.returncode != 0 and not (proc.stdout or "").strip() \
-            and re.search(r"unknown (?:option|argument)|unrecognized|unexpected argument|invalid option",
-                          (proc.stderr or ""), re.I):
-        _claude_lean_ok = False          # older CLI: retry once with the old flag set
-        proc = call(False)
+    proc = call(True)
+    if proc.returncode != 0:
+        raise EngineError("Claude generation failed. Required isolation flags must be supported; update Claude CLI or select an API backend.")
     out = (proc.stdout or "").strip()
     if not out:
-        raise EngineError(f"Claude CLI returned nothing. stderr: {(proc.stderr or '')[:300]}")
+        raise EngineError("Claude CLI returned nothing.")
     try:
         env = json.loads(out)
     except json.JSONDecodeError:
         m = re.search(r"\{.*\}\s*$", out, re.DOTALL)
         if not m:
-            raise EngineError(f"Could not parse Claude CLI output: {out[:300]}")
+            raise EngineError("Could not parse Claude CLI output.")
         env = json.loads(m.group(0))
     if env.get("is_error"):
         res = str(env.get("result", ""))
         if "oauth" in res.lower() or "authenticate" in res.lower():
             raise EngineError("Claude session expired — run `claude auth login` "
                               "(or `claude setup-token`) in a terminal, then retry.")
-        raise EngineError(f"Claude CLI error: {res[:300]}")
+        raise EngineError("Claude CLI returned an error.")
     text = str(env.get("result", "")).strip()
     if not text:
         raise EngineError("Claude CLI produced an empty result.")
@@ -155,21 +162,29 @@ def _run_codex(prompt: str, timeout: int, cfg: dict, task: str = "main", budget=
     codex = _which("codex")
     if not codex:
         raise EngineError("`codex` CLI not found on PATH.")
-    cmd = [codex, "exec", "--skip-git-repo-check"]
-    if cfg.get("codex_model"):
-        cmd += ["-m", cfg["codex_model"]]
+    cmd = [codex, "exec", "--skip-git-repo-check", "--ignore-user-config",
+           "--ignore-rules", "--ephemeral", "--sandbox", "read-only",
+           "-c", 'approval_policy="never"', "-c", 'web_search="disabled"',
+           "-c", 'features.shell_tool=false', "-c", 'features.unified_exec=false',
+           "-c", 'features.code_mode=false', "-c", 'features.hooks=false',
+           "-c", 'features.multi_agent=false']
+    model = _model_for(cfg, "codex_model", task)
+    if model and not re.fullmatch(r"[A-Za-z0-9_./:@+-]{1,200}", model):
+        raise EngineError("Invalid CLI model name.")
+    if model:
+        cmd += ["-m", model]
     cmd += ["-"]  # read prompt from stdin
     try:
-        proc = subprocess.run(cmd, input=prompt, capture_output=True, text=True,
+        proc = _generation_process(cmd, input=prompt, capture_output=True, text=True,
                               timeout=timeout, encoding="utf-8", errors="replace",
                               cwd=_NEUTRAL_CWD, shell=(os.name == "nt"))
     except subprocess.TimeoutExpired as e:
         raise EngineError(f"Codex CLI timed out after {timeout}s.") from e
-    if proc.returncode != 0 and not (proc.stdout or "").strip():
+    if proc.returncode != 0:
         err = (proc.stderr or "").strip()
         if "login" in err.lower() or "auth" in err.lower():
             raise EngineError("Codex session not authenticated — run `codex login` in a terminal.")
-        raise EngineError(f"Codex CLI error: {err[:300]}")
+        raise EngineError("Codex generation failed. Update the CLI if required isolation flags are unsupported, or select an API backend.")
     text = _ANSI.sub("", proc.stdout or "").strip()
     if not text:
         raise EngineError("Codex CLI produced no output.")
@@ -184,15 +199,22 @@ def _post(url: str, budget: dict | None, **kw):
     budget = budget if budget is not None else {"retry": 1}
     while True:
         try:
+            run = policy.current()
+            if run:
+                kw["timeout"] = run.remaining()
             r = requests.post(url, **kw)
         except requests.Timeout as e:
             if budget["retry"] > 0:
                 budget["retry"] -= 1
+                if policy.current():
+                    policy.current().attempt()
                 time.sleep(2)
                 continue
             raise EngineError("API request timed out.") from e
         if (r.status_code == 429 or r.status_code >= 500) and budget["retry"] > 0:
             budget["retry"] -= 1
+            if policy.current():
+                policy.current().attempt()
             time.sleep(2)
             continue
         return r
@@ -206,16 +228,16 @@ def _run_anthropic(prompt: str, timeout: int, cfg: dict, task: str = "main", bud
     r = _post("https://api.anthropic.com/v1/messages", budget,
               headers={"x-api-key": key, "anthropic-version": "2023-06-01",
                        "content-type": "application/json"},
-              json={"model": model, "max_tokens": 4096,
+              json={"model": model, "max_tokens": policy.POLICY.max_output_tokens, "system": policy.SYSTEM,
                     "messages": [{"role": "user", "content": prompt}]},
               timeout=timeout)
     if r.status_code != 200:
-        raise EngineError(f"Anthropic API {r.status_code}: {r.text[:200]}")
+        raise EngineError(f"Anthropic API request failed (HTTP {r.status_code}).")
     text = "".join(b.get("text", "") for b in r.json().get("content", [])
                    if b.get("type") == "text").strip()
     if not text:
         raise EngineError("Anthropic API returned empty text.")
-    return EngineResult(text=text, via="anthropic-api")
+    return EngineResult(text=text, via="anthropic-api", raw={"usage": r.json().get("usage", {})})
 
 
 def _run_openai(prompt: str, timeout: int, cfg: dict, task: str = "main", budget=None) -> EngineResult:
@@ -223,16 +245,21 @@ def _run_openai(prompt: str, timeout: int, cfg: dict, task: str = "main", budget
     if not key:
         raise EngineError("No OpenAI API key set.")
     model = _model_for(cfg, "openai_model", task) or "gpt-5"
+    payload = {"model": model, "max_completion_tokens": policy.POLICY.max_output_tokens,
+               "messages": [{"role": "system", "content": policy.SYSTEM}, {"role": "user", "content": prompt}]}
+    schema = _RESPONSE_SCHEMA.get()
+    if schema:
+        payload["response_format"] = {"type": "json_schema", "json_schema":
+                                      {"name": "job_application", "strict": True, "schema": schema}}
     r = _post("https://api.openai.com/v1/chat/completions", budget,
               headers={"authorization": f"Bearer {key}", "content-type": "application/json"},
-              json={"model": model, "messages": [{"role": "user", "content": prompt}]},
-              timeout=timeout)
+              json=payload, timeout=timeout)
     if r.status_code != 200:
-        raise EngineError(f"OpenAI API {r.status_code}: {r.text[:200]}")
+        raise EngineError(f"OpenAI API request failed (HTTP {r.status_code}).")
     text = (r.json()["choices"][0]["message"]["content"] or "").strip()
     if not text:
         raise EngineError("OpenAI API returned empty text.")
-    return EngineResult(text=text, via="openai-api")
+    return EngineResult(text=text, via="openai-api", raw={"usage": r.json().get("usage", {})})
 
 
 def _run_custom(prompt: str, timeout: int, cfg: dict, task: str = "main", budget=None) -> EngineResult:
@@ -248,10 +275,10 @@ def _run_custom(prompt: str, timeout: int, cfg: dict, task: str = "main", budget
     if key:
         headers["authorization"] = f"Bearer {key}"
     r = _post(url, budget, headers=headers,
-              json={"model": model, "messages": [{"role": "user", "content": prompt}]},
+              json={"model": model, "max_completion_tokens": policy.POLICY.max_output_tokens, "messages": [{"role": "system", "content": policy.SYSTEM}, {"role": "user", "content": prompt}]},
               timeout=timeout)
     if r.status_code != 200:
-        raise EngineError(f"Custom API {r.status_code}: {r.text[:200]}")
+        raise EngineError(f"Custom API request failed (HTTP {r.status_code}).")
     text = (r.json()["choices"][0]["message"]["content"] or "").strip()
     if not text:
         raise EngineError("Custom API returned empty text.")
@@ -271,13 +298,30 @@ _RUNNERS = {
 def generate(prompt: str, timeout: int = 300, cfg: dict | None = None,
              task: str = "main", _budget: dict | None = None) -> EngineResult:
     """task: "fast" (scoring, CV import) uses the cheaper model tier; "main" the strong one."""
-    cfg = cfg or config.load_config()
+    cfg = config.load_config() if cfg is None else cfg
+    if task not in {"main", "fast"}:
+        raise EngineError("Unknown AI task tier.")
+    if len(prompt) > policy.POLICY.max_input_chars:
+        raise EngineError("AI input is too large. Shorten the CV or answers.")
     backend = resolve_backend(cfg)
-    if backend == "none":
-        raise EngineError(
-            "No AI backend available. Install Claude Code (`claude`) or Codex "
-            "(`codex`) and log in, or set ANTHROPIC_API_KEY / OPENAI_API_KEY.")
-    return _RUNNERS[backend](prompt, timeout, cfg, task, _budget)
+    if backend not in _RUNNERS:
+        raise EngineError("No supported AI backend available. Select a backend in Settings.")
+    try:
+        with policy.scope(timeout) as run:
+            run.attempt()
+            result = _RUNNERS[backend](policy.SYSTEM + "\n\n" + prompt, run.remaining(), cfg, task, _budget)
+            run.remaining()
+            if len(result.text) > policy.POLICY.max_output_chars:
+                raise EngineError("AI output exceeded the size limit.")
+            if result.raw and isinstance(result.raw.get("usage"), dict):
+                usage = {k: v for k, v in result.raw["usage"].items() if isinstance(v, (int, float))}
+                try:
+                    policy.trace(run, backend=backend, task=task, usage=usage, outcome="provider_returned")
+                except OSError:
+                    pass
+            return result
+    except policy.PolicyError as e:
+        raise EngineError(str(e)) from e
 
 
 _FENCE = re.compile(r"```(?:json)?\s*(.*?)\s*```", re.DOTALL)
@@ -300,26 +344,43 @@ def extract_json(text: str):
             return json.loads(blob)
         except json.JSONDecodeError:
             continue
-    raise EngineError(f"Model did not return valid JSON. Got: {text[:200]}")
+    raise EngineError("Model did not return valid JSON.")
 
 
 _JSON_REMINDER = ("\n\nYour previous reply was not valid JSON. Reply again with ONLY the JSON, "
                   "no commentary and no code fences.")
 
 
-def generate_json(prompt: str, timeout: int = 300, cfg: dict | None = None, task: str = "main"):
+def generate_json(prompt: str, timeout: int = 300, cfg: dict | None = None, task: str = "main", schema=None):
     """One retry in total per call (API retry OR bad-JSON retry, whichever fires
     first), so the worst case is two calls and cost stays bounded."""
-    budget = {"retry": 1}
-    text = generate(prompt, timeout=timeout, cfg=cfg, task=task, _budget=budget).text
+    cfg = config.load_config() if cfg is None else cfg
     try:
-        return extract_json(text)
-    except EngineError:
-        if budget["retry"] <= 0:
-            raise
-        budget["retry"] -= 1
-        return extract_json(generate(prompt + _JSON_REMINDER, timeout=timeout, cfg=cfg,
-                                     task=task, _budget=budget).text)
+        with policy.scope(timeout) as run:
+            schema_token = _RESPONSE_SCHEMA.set(schema)
+            outcome = "failed"
+            try:
+                budget = {"retry": 1}
+                text = generate(prompt, timeout=timeout, cfg=cfg, task=task, _budget=budget).text
+                try:
+                    data = extract_json(text)
+                except EngineError:
+                    if budget["retry"] <= 0:
+                        raise
+                    budget["retry"] -= 1
+                    data = extract_json(generate(prompt + _JSON_REMINDER, timeout=timeout, cfg=cfg,
+                                                 task=task, _budget=budget).text)
+                outcome = "json_parsed"
+                return data
+            finally:
+                _RESPONSE_SCHEMA.reset(schema_token)
+                try:
+                    policy.trace(run, backend=resolve_backend(cfg), task=task,
+                                 model_fingerprint=policy.fingerprint(cfg, task), outcome=outcome)
+                except OSError:
+                    pass  # Trace storage must not destroy a generated result.
+    except policy.PolicyError as e:
+        raise EngineError(str(e)) from e
 
 
 # ---------------------------------------------------- account / auth ----

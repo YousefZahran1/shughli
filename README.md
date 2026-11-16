@@ -98,3 +98,41 @@ python -m pytest -q
 ## License
 
 MIT. See [LICENSE](LICENSE).
+
+## AI execution and review controls
+
+All generation goes through `core/engine.py` and the central `core/policy.py` policy:
+
+- Two concurrent AI runs; excess requests fail with a retry message.
+- Two application-level attempts shared by API retries and JSON repair.
+- A 300-second overall generation deadline, checked before attempts and after responses. Each request/subprocess receives the remaining timeout. HTTP timeouts are transport timeouts, not a guarantee against every stalled or trickling server.
+- 80,000 input characters, 60,000 returned characters, and 4,096 requested output tokens for API calls. CLI output is checked after the process finishes. Provider/CLI internal retries and billing are outside this application's attempt accounting.
+- Claude requires safe mode, disabled tools/MCP/customizations and no session persistence. Unsupported flags fail without a weaker fallback.
+- Codex runs in a fresh directory with read-only sandbox, no approvals, no user config/rules, no session persistence, shell/unified execution, code mode, hooks and multi-agent features disabled, and web search disabled. This is CLI-level restriction, not an OS/container guarantee. Managed policies can still apply; use an API backend for a plain text request with no local agent process.
+- CV and job input are explicitly untrusted. System instructions forbid executing embedded instructions. These defenses reduce prompt injection risk; they do not prove immunity.
+
+OpenAI requests use native strict JSON schemas for CV import, review, improvement and tailoring. All providers receive local normalized response validation. Scoring filters unknown/duplicate IDs, handles non-finite scores, and caps explicitly empty-description postings at 70. API/provider errors fail clearly; unsupported native schema models do not silently downgrade.
+
+CV coach improvements now open a before/after preview. **Accept and save** writes the profile and backs up the old version; **Reject changes** leaves the saved profile alone. Acceptance checks the original profile hash so a stale preview cannot overwrite later changes.
+
+Tailoring only retains skills explicitly present in the candidate source and projects matching source identities. Source checks flag numbers absent from candidate evidence, include a source hash, and require human review. These conservative checks can flag legitimate rephrasing and cannot establish the truth of every sentence.
+
+Scoring cache keys include authorization, prompt text/version, model/backend identity and job-content comparisons. Tailored packages and CV reviews also invalidate when relevant prompt/model/input changes. The first use after this update can therefore regenerate old results.
+
+`data/ai_runs.jsonl` stores run IDs, UTC timestamps, backend/task identity, durations, attempt counts, parse outcomes and numeric usage where available. It omits CV text, generated text, API keys and provider error bodies. It rotates after approximately 2 MB and retains one previous file. Usage limits are **not a currency spending cap**; model/provider pricing and subscription billing differ.
+
+Run regression checks without using real profile data:
+
+```powershell
+python -m pip install -r requirements.txt -r requirements-dev.txt
+python -m pytest -q --basetemp=work/pytest
+node --check static/app.js
+```
+
+Optional live AI quality checks use synthetic English and Arabic CVs with malicious job instructions:
+
+```powershell
+python -m core.evals --live
+```
+
+This command uses the selected provider and may consume subscription/API credit. Inspect `data/eval_report.json` for generated claims as well as automated checks. A passing report is a small regression signal, not a broad quality or safety certification.

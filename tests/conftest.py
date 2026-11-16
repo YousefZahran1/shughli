@@ -10,6 +10,7 @@ from core import config, engine  # noqa: E402
 
 @pytest.fixture(autouse=True)
 def tmp_data(tmp_path, monkeypatch):
+    monkeypatch.setattr(engine.tempfile, "tempdir", str(tmp_path))
     d = tmp_path / "data"
     for name in ("applications", "uploads"):
         (d / name).mkdir(parents=True)
@@ -41,3 +42,10 @@ def stub_generate(monkeypatch):
     monkeypatch.setattr(engine, "generate", fake)
     monkeypatch.setattr(engine, "resolve_backend", lambda cfg=None: "stub")
     return s
+
+
+@pytest.fixture
+def client(tmp_data):
+    import app as appmod
+    appmod.app.config["TESTING"] = True
+    return appmod.app.test_client(), appmod

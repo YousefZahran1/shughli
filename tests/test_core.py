@@ -307,7 +307,7 @@ def test_claude_command_lean_and_model_tiers():
     assert "--strict-mcp-config" in fast and "--safe-mode" in fast and "--bare" not in fast
     assert fast[fast.index("--model") + 1] == "haiku" and "--model" not in main
     old = engine._claude_cmd("claude", cfg, "main", False)
-    assert "--disallowed-tools" in old and "--safe-mode" not in old
+    assert "--tools" in old and "--safe-mode" in old  # isolation never downgraded
 
 
 def test_model_for_defaults():

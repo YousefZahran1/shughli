@@ -7,11 +7,12 @@ and jobs that were not scored stay `score: None` — never a fake 0.
 """
 from __future__ import annotations
 
+import math
 import hashlib
 import json
 import re
 
-from . import engine, profile as profile_mod
+from . import engine, policy, profile as profile_mod
 from .textutil import excerpt
 
 BATCH = 18
@@ -70,6 +71,8 @@ def _coerce_score(v) -> int | None:
         if not m:
             return None
         n = float(m.group(0))
+    if not math.isfinite(n):
+        return None
     return max(0, min(100, int(round(n))))
 
 
@@ -120,11 +123,11 @@ def rank_local(jobs: list[dict], profile: dict) -> list[dict]:
     return sorted(jobs, key=lambda j: (_overlap(j, terms), len(j.get("description") or "")), reverse=True)
 
 
-def score_key(profile: dict) -> str:
+def score_key(profile: dict, cfg=None) -> str:
     """Identifies what a score was computed against: CV text, target levels, prompt version."""
     seniority = profile.get("preferences", {}).get("seniority", [])
     basis = profile_mod.as_cv_text(profile) + "\n" + ",".join(sorted(seniority)) + "\n" + PROMPT_VERSION
-    return hashlib.sha1(basis.encode("utf-8")).hexdigest()[:16]
+    return policy.digest([basis, profile.get("work_authorization", []), _PROMPT, policy.fingerprint(cfg, "fast")])
 
 
 # --------------------------------------------------------------- score ----
@@ -143,8 +146,13 @@ def score_jobs(jobs: list[dict], profile: dict, cfg=None, log=print) -> dict[str
                     continue
                 jid = str(item.get("id", ""))
                 score = _coerce_score(item.get("score"))
-                if jid and score is not None:
-                    results[jid] = {"score": score, "reason": str(item.get("reason", ""))[:120]}
+                if jid in {str(j["id"]) for j in batch} and jid not in results and score is not None:
+                    source_job = next(j for j in batch if str(j["id"]) == jid)
+                    reason = " ".join(str(item.get("reason", "")).split()[:12])[:120]
+                    if "description" in source_job and not source_job.get("description"):
+                        score = min(score, 70)
+                        reason = "title only: " + reason
+                    results[jid] = {"score": score, "reason": reason}
             log(f"Scored batch {i // BATCH + 1} ({len(batch)}).")
         except Exception as e:  # noqa: BLE001
             log(f"Scoring batch {i // BATCH + 1} failed: {e}")
@@ -171,18 +179,18 @@ def sort_jobs(jobs: list[dict]) -> list[dict]:
 
 def run(jobs: list[dict], profile: dict, old_jobs: list[dict], cfg: dict, log=print) -> list[dict]:
     """Full scoring pass for a fetch: reuse, local pre-rank + cap, AI score."""
-    key = score_key(profile)
+    key = score_key(profile, cfg)
     old = {j.get("id"): j for j in old_jobs}
     todo: list[dict] = []
     reused = 0
     for j in jobs:
         o = old.get(j["id"])
-        if o and o.get("score") is not None and o.get("score_key") == key:
+        if o and o.get("score") is not None and o.get("score_key") == key and policy.digest(o.get("description", "")) == policy.digest(j.get("description", "")) and all(o.get(k) == j.get(k) for k in ("title", "company", "location", "level")):
             j["score"], j["score_reason"], j["score_key"] = o["score"], o.get("score_reason", ""), key
             reused += 1
         else:
             todo.append(j)
-    cap = int(cfg.get("max_ai_scored", 40) or 40)
+    cap = max(1, min(500, int(cfg.get("max_ai_scored", 40) or 40)))
     ranked = rank_local(todo, profile)
     send, skipped = ranked[:cap], ranked[cap:]
     for j in skipped:
