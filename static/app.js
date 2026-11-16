@@ -394,7 +394,7 @@ async function tailor() {
     $("#g-projects").innerHTML = (p.projects || []).map(pr => `<li><b>${esc(pr.header || "")}</b><br>${(pr.bullets || []).map(esc).join("<br>")}</li>`).join("");
     $("#g-cover").textContent = p.cover_letter || "";
     const checks = p.source_checks || {};
-    $("#g-cover").textContent += "\n\nReview before submitting: " + (checks.note || "Check all claims against your CV.") +
+    $("#g-review-notes").textContent = "Review before submitting: " + (checks.note || "Check all claims against your CV.") +
       (checks.warnings?.length ? "\n" + checks.warnings.join("\n") : "");
     const fit = p.fit || {};
     $("#g-fit").innerHTML = (fit.matches || []).map(m => `<div>✓ <b>${esc(m)}</b></div>`).join("") + (fit.gaps || []).map(g => `<div class="gap">△ <b>${esc(g)}</b></div>`).join("");
