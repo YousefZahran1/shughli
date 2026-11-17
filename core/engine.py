@@ -104,12 +104,16 @@ def _cli_json(stdout):
         return events
 
 
-def _cli_failure(provider, stdout="", stderr="", timed_out=False):
+def _cli_failure(provider, stdout="", stderr="", timed_out=False, model=""):
     raw = json.dumps(_cli_json(stdout), ensure_ascii=False) + " " + (stderr or "")
     low = raw.lower()
     if timed_out or re.search(r"timed? ?out|timeout", low):
         category = "timeout"
         message = f"{provider.title()} CLI timed out. Try again."
+    elif re.search(r"model_not_found|unrecognized_model|model.{0,240}(?:not found|does not exist|may not exist|not available|unavailable|not supported)", low):
+        category = "model_unavailable"
+        selected = f" '{model}'" if model else " (CLI default)"
+        message = f"{provider.title()} model{selected} was not found or is not available. Change the model in Settings and retry."
     elif re.search(r"oauth|authenticat|unauthorized|token.{0,30}expir|session.{0,30}expir|not logged in|please.{0,10}login|401", low):
         category = "auth_expired"
         login = "claude auth login" if provider == "claude" else "codex login"
@@ -186,16 +190,19 @@ def _run_claude(prompt: str, timeout: int, cfg: dict, task: str = "main", budget
                                   encoding="utf-8", errors="replace",
                                   shell=(os.name == "nt"))
         except subprocess.TimeoutExpired as e:
-            raise _cli_failure("claude", e.stdout, e.stderr, timed_out=True) from None
+            raise _cli_failure("claude", e.stdout, e.stderr, timed_out=True,
+                               model=_model_for(cfg, "claude_model", task)) from None
 
     proc = call()
     events = _cli_json(proc.stdout)
     if _cli_has_error(events) or proc.returncode != 0:
-        raise _cli_failure("claude", proc.stdout, proc.stderr)
+        raise _cli_failure("claude", proc.stdout, proc.stderr,
+                           model=_model_for(cfg, "claude_model", task))
     env = events[-1] if events else {}
     text = str(env.get("result", "")).strip()
     if not text:
-        raise _cli_failure("claude", proc.stdout, proc.stderr)
+        raise _cli_failure("claude", proc.stdout, proc.stderr,
+                           model=_model_for(cfg, "claude_model", task))
     return EngineResult(text=text, via="claude-cli", raw=env, models=tuple(env.get("modelUsage", {})))
 
 
@@ -223,15 +230,15 @@ def _run_codex(prompt: str, timeout: int, cfg: dict, task: str = "main", budget=
                               timeout=timeout, encoding="utf-8", errors="replace",
                               shell=(os.name == "nt"))
     except subprocess.TimeoutExpired as e:
-        raise _cli_failure("codex", e.stdout, e.stderr, timed_out=True) from None
+        raise _cli_failure("codex", e.stdout, e.stderr, timed_out=True, model=model) from None
     events = _cli_json(proc.stdout)
     if _cli_has_error(events) or proc.returncode != 0:
-        raise _cli_failure("codex", proc.stdout, proc.stderr)
+        raise _cli_failure("codex", proc.stdout, proc.stderr, model=model)
     messages = [e["item"].get("text", "") for e in events
                 if e.get("type") == "item.completed" and e.get("item", {}).get("type") == "agent_message"]
     text = messages[-1] if messages else _ANSI.sub("", proc.stdout or "").strip()
     if not text:
-        raise _cli_failure("codex", proc.stdout, proc.stderr)
+        raise _cli_failure("codex", proc.stdout, proc.stderr, model=model)
     models = tuple(dict.fromkeys(e["model"] for e in events if isinstance(e.get("model"), str)))
     if not models:
         reported = re.search(r"^model:\s*(\S+)", proc.stderr or "", re.M)
