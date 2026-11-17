@@ -125,3 +125,21 @@ This section supersedes earlier limitations addressed below. Existing uncommitte
 - Existing Windows pyreadline3 cleanup warnings sometimes appear after pytest passes; final test exit status was zero.
 
 See AI_CONTROL_REVIEW.md for the current control inventory and remaining priorities.
+
+## Search and model-error follow-up ? 2026-11-17
+
+Three fixes completed locally on ai-policy-fixes; nothing pushed:
+
+1. **1809d2b** ? Preserve fetched jobs and finished scores when a search reaches its deadline or batch limit. Remaining jobs stay unscored; explicit user cancellation still discards the run, and late workers cannot overwrite saved results. This commit was already present when work resumed.
+2. **46068d8** ? Align max_ai_scored with SEARCH_MAX_BATCHES x BATCH (12 x 18 = 216). Legacy values such as 500 are capped during scoring; saving an above-budget value stores the covered maximum. Status/config responses and Settings show the effective cap. Reviewed the inherited implementation and five new tests, then verified the full 152-test suite before committing; no new behavior was added during that review.
+3. **4a0b776** ? Add model_unavailable classification for both CLIs. The user message names the effective configured model, including the fast-tier model for scoring, and directs the user to Settings. Raw provider messages remain only in ignored private diagnostics, not public errors or normal traces.
+
+Verification:
+
+- Before writing fix 3 tests, probed installed Claude Code 2.1.268 and Codex CLI 0.169.0 with the synthetic unknown model no-such-model-xyz using the application's isolated invocation. Claude reported that the selected model may not exist or be accessible; Codex reported that the model is unsupported with a ChatGPT account. Raw responses were retained in data/private_debug only.
+- Fix 3's 14 new tests initially failed because the category was other. After implementation, all 33 CLI-error tests passed. Coverage includes both exit codes, main/fast routing, real provider wording, stderr variants, private diagnostic retention and normal-trace redaction. Existing tests were not weakened.
+- Final full suite: python -m pytest -q --basetemp=work/pytest-three-fixes-final ? **166 passed in 42.41 seconds**.
+- node --check static/app.js, python -m compileall -q core app.py, and git diff --check passed.
+- The first default-temp pytest run failed at setup because the sandbox could not create its temporary directories; the workspace-temp runs passed. Initial restricted CLI probes could not complete; the successful real-wording probes used elevated execution. No personal profile/config files were edited.
+- Existing pyreadline3 destructor warnings appeared after successful tests; pytest exited zero.
+- No visual browser acceptance check, new successful-generation quality eval, live API check, or OS isolation audit was performed in this follow-up. The live checks verify unknown-model rejection wording only. Test-first evidence for the inherited fix 1/fix 2 changes was not re-established by reverting existing work.
