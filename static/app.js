@@ -54,6 +54,7 @@ async function refreshStatus() {
   catch (e) { $("#subtitle").textContent = "\u26a0 server not reachable"; return null; }
   LAST_STATUS = s;
   showModelRouting(s.model_routing);
+  showScoringCap(s.scoring_cap);
   CONFIG = s.config;
   $("#app-title").textContent = s.app_title;
   document.title = s.app_title;
@@ -284,6 +285,13 @@ function showModelRouting(routing) {
   if (!routing) return;
   $("#effective-models").textContent = `Active backend: ${routing.backend}. Fast tier: ${routing.tiers.fast}. Main tier: ${routing.tiers.main}.`;
 }
+function showScoringCap(cap) {
+  if (!cap) return;
+  const covers = `${cap.max} jobs (${cap.batches} batches of ${cap.batch_size})`;
+  $("#effective-cap").textContent = cap.configured > cap.effective
+    ? `AI scoring cap: ${cap.effective} jobs per search. max_ai_scored is set to ${cap.configured}, but one search covers at most ${covers}.`
+    : `AI scoring cap: ${cap.effective} jobs per search (max_ai_scored). One search covers at most ${covers}.`;
+}
 function renderSettings() {
   $$("[data-cfg]").forEach(el => {
     const v = getPath(CONFIG, el.dataset.cfg);
@@ -300,6 +308,7 @@ async function saveSettings() {
     const r = await (await fetch("/api/config", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(cfg) })).json();
     if (!r.ok) throw new Error(r.msg || "save failed");
     showModelRouting(r.model_routing);
+    showScoringCap(r.scoring_cap);
     CONFIG = r.config; $("#settings-saved").textContent = "saved ✓";
     refreshStatus(); setTimeout(() => $("#settings-saved").textContent = "", 2500);
   } catch (e) { $("#settings-saved").textContent = "\u26a0 " + e.message; }

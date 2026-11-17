@@ -59,6 +59,22 @@ def _prompt(cv: str, work_auth: list, jobs: list[dict], seniority: list) -> str:
                           jobs_json=json.dumps(rows, ensure_ascii=False))
 
 
+# ----------------------------------------------------------------- cap ----
+def cap_info(cfg: dict | None) -> dict:
+    """The `max_ai_scored` setting next to what one search can actually score.
+
+    A search may run `policy.SEARCH_MAX_BATCHES` batches of `BATCH` jobs, so that
+    product is the real ceiling; a larger setting is capped to it.
+    """
+    covered = policy.SEARCH_MAX_BATCHES * BATCH
+    try:
+        configured = int((cfg or {}).get("max_ai_scored") or 40)
+    except (TypeError, ValueError):
+        configured = 40
+    return {"configured": configured, "effective": max(1, min(configured, covered)), "max": covered,
+            "batches": policy.SEARCH_MAX_BATCHES, "batch_size": BATCH}
+
+
 # ------------------------------------------------------------- parsing ----
 def _coerce_score(v) -> int | None:
     if isinstance(v, bool):
@@ -227,7 +243,7 @@ def prepare(jobs: list[dict], profile: dict, old_jobs: list[dict], cfg: dict) ->
             reused += 1
         else:
             todo.append(j)
-    cap = max(1, min(500, int(cfg.get("max_ai_scored", 40) or 40)))
+    cap = cap_info(cfg)["effective"]
     ranked = rank_local(todo, profile)
     send, skipped = ranked[:cap], ranked[cap:]
     for j in skipped:

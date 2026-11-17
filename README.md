@@ -84,7 +84,7 @@ Your profile, cached jobs and generated files live in `data/`, and your settings
 - LinkedIn may rate-limit you without a proxy. Indeed is the most reliable board.
 - Fetching is slow because it also pulls job descriptions.
 - Scoring and tailoring use your subscription or API credit, so tailor only the jobs you plan to apply for.
-- To keep cost down, scoring and CV import use a cheaper model tier, and only the top `max_ai_scored` jobs (40 by default) go to the AI. The rest show as unscored.
+- To keep cost down, scoring and CV import use a cheaper model tier, and only the top `max_ai_scored` jobs (40 by default) go to the AI. The rest show as unscored. One search can score at most 216 jobs (12 batches of 18), so a larger `max_ai_scored` is capped to 216; Settings shows the cap in effect.
 - A tailored package is saved, so opening it again costs nothing until you hit Regenerate.
 - I have run it on Windows. It should work on macOS and Linux too.
 

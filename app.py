@@ -124,6 +124,7 @@ def status():
         "backends": engine.available_backends(cfg),
         "active_backend": engine.resolve_backend(cfg),
         "model_routing": policy.model_routing(cfg),
+        "scoring_cap": scoring.cap_info(cfg),
         "keys": {"anthropic": bool(cfg.get("anthropic_api_key")),
                  "openai": bool(cfg.get("openai_api_key"))},
         "profile_ready": profile_mod.is_ready(prof),
@@ -287,7 +288,9 @@ def _validate_config(body: dict) -> dict:
     if "hours_old" in body:
         out["hours_old"] = _int_in(body, "hours_old", 24, 2160)
     if "max_ai_scored" in body:
-        out["max_ai_scored"] = _int_in(body, "max_ai_scored", 1, 500)
+        # Above what one search can score (batch budget x batch size) is stored as that ceiling.
+        # Settings re-posts the whole config, so an older, larger value must not block saving.
+        out["max_ai_scored"] = min(_int_in(body, "max_ai_scored", 1, 100000), scoring.cap_info({})["max"])
     for k in _STR_KEYS:
         if k in body:
             if not isinstance(body[k], str):
@@ -326,7 +329,8 @@ def set_config():
         else:
             cfg[k] = v
     config.save_config(cfg)
-    return jsonify({"ok": True, "config": _public_cfg(cfg), "model_routing": policy.model_routing(cfg)})
+    return jsonify({"ok": True, "config": _public_cfg(cfg), "model_routing": policy.model_routing(cfg),
+                    "scoring_cap": scoring.cap_info(cfg)})
 
 
 @app.post("/api/fetch")
