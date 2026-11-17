@@ -10,11 +10,13 @@ def test_workflow_trace_and_batch_cap(monkeypatch,tmp_data):
     jobs=[{'id':str(i),'title':'t','company':'c','location':'l'} for i in range(19)]
     workflow=policy.Workflow()
     with policy.workflow_scope(workflow):
+        # The cap still stops the second batch; it no longer raises and discards (see test_limits_keep_work).
+        scoring.score_jobs(jobs,P.normalize_profile({}),log=lambda *_:None)
         with pytest.raises(policy.PolicyError,match='batch'):
-            scoring.score_jobs(jobs,P.normalize_profile({}),log=lambda *_:None)
+            workflow.next_batch()
     rows=[json.loads(line) for line in (tmp_data/'ai_runs.jsonl').read_text().splitlines()]
     assert rows and all(r['workflow_id']==workflow.id for r in rows)
-    assert workflow.batches==1
+    assert workflow.batches==1 and workflow.limit_hit=='batch budget'
 
 def test_search_deadline(monkeypatch):
     flow=policy.Workflow()

@@ -64,8 +64,9 @@ def _run_fetch(do_score: bool) -> None:
     # `running` is set by start_fetch under the lock, before this thread starts.
     flow = _fetch.get("workflow") or policy.Workflow()
     def workflow_log(message):
+        # Lines from a worker the search has already moved on from are dropped.
         with _lock:
-            if _fetch.get("workflow") is not flow or flow.cancel.is_set() or time.monotonic() >= flow.deadline:
+            if _fetch.get("workflow") is not flow or flow.cancel.is_set() or flow.closed:
                 return
             _fetch["log"].append(f"{time.strftime('%H:%M:%S')}  {message}")
     with policy.workflow_scope(flow):
@@ -75,26 +76,35 @@ def _run_fetch(do_score: bool) -> None:
             old_jobs = _load_cache()
             _log("Fetching jobs…")
             jobs = policy.interruptible(lambda: sources.collect(prof, cfg, log=workflow_log))
-            policy.check_workflow()
-            if do_score and jobs:
-                if engine.resolve_backend(cfg) == "none":
-                    _log("⚠ No AI backend — skipping scoring (jobs still listed).")
-                    jobs = scoring.apply_scores(jobs, {})
-                else:
-                    _log(f"Scoring via {engine.resolve_backend(cfg)}…")
-                    jobs = policy.interruptible(lambda: scoring.run(jobs, prof, old_jobs, cfg, log=workflow_log))
-            else:
-                jobs = scoring.apply_scores(jobs, {})
-            policy.check_workflow()
+            flow.check_cancelled()
+            # From here on the fetched jobs are kept whatever happens to scoring:
+            # a search limit stops the spending, only a user cancel discards results.
+            if do_score and jobs and engine.resolve_backend(cfg) == "none":
+                _log("⚠ No AI backend — skipping scoring (jobs still listed).")
+            elif do_score and jobs:
+                _log(f"Scoring via {engine.resolve_backend(cfg)}…")
+                plan = scoring.prepare(jobs, prof, old_jobs, cfg)
+                try:
+                    policy.interruptible(lambda: scoring.score_plan(plan, jobs, prof, cfg, log=workflow_log))
+                except policy.WorkflowLimit as limit:
+                    flow.hit_limit(limit.limit)
+            flow.close()   # a scoring call still in flight can no longer change jobs or the log
+            flow.check_cancelled()
+            jobs = scoring.apply_scores(jobs, {})
             _save_cache(jobs)
             with _lock:
                 _fetch["count"] = len(jobs)
+            if flow.limit_hit:
+                left = sum(1 for j in jobs if j.get("score") is None and j.get("score_reason") == "not scored")
+                _log(f"Stopped scoring: {policy.describe_limit(flow.limit_hit)} reached. {left} of {len(jobs)} jobs "
+                     "left not scored; every fetched job and every finished score was saved.")
             _log(f"Done. {len(jobs)} jobs cached.")
         except Exception as e:  # noqa: BLE001
             _log(f"ERROR: {e}")
             with _lock:
                 _fetch["error"] = str(e)
         finally:
+            flow.close()
             with _lock:
                 _fetch["running"] = False
 

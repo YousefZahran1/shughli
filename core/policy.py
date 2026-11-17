@@ -22,24 +22,62 @@ SEARCH_MAX_BATCHES = 12
 SEARCH_MAX_SECONDS = 600
 _workflow = ContextVar("search_workflow", default=None)
 
+class PolicyError(RuntimeError):
+    pass
+
+class WorkflowCancelled(PolicyError):
+    """The user cancelled the search: its results are discarded."""
+
+class WorkflowLimit(PolicyError):
+    """A search limit was reached: stop spending, keep the work done so far."""
+    def __init__(self, message, limit):
+        super().__init__(message)
+        self.limit = limit   # "deadline" | "batch budget"
+
+def describe_limit(limit):
+    return {"deadline": f"workflow deadline ({SEARCH_MAX_SECONDS} s)",
+            "batch budget": f"scoring batch budget ({SEARCH_MAX_BATCHES} batches)"}.get(limit, limit)
+
 @dataclass
 class Workflow:
     id: str = field(default_factory=lambda: uuid.uuid4().hex)
     deadline: float = field(default_factory=lambda: time.monotonic() + SEARCH_MAX_SECONDS)
     cancel: threading.Event = field(default_factory=threading.Event)
     batches: int = 0
+    limit_hit: str = ""      # first limit that stopped scoring, if any
+    closed: bool = False     # once closed, a late worker can no longer change results
+    lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+
+    def check_cancelled(self):
+        if self.cancel.is_set():
+            raise WorkflowCancelled("Search cancelled.")
 
     def check(self):
-        if self.cancel.is_set():
-            raise PolicyError("Search cancelled.")
+        self.check_cancelled()
         if time.monotonic() >= self.deadline:
-            raise PolicyError("Search exceeded its workflow deadline.")
+            raise WorkflowLimit("Search exceeded its workflow deadline.", "deadline")
 
     def next_batch(self):
         self.check()
         if self.batches >= SEARCH_MAX_BATCHES:
-            raise PolicyError("Search reached its scoring batch budget.")
+            raise WorkflowLimit("Search reached its scoring batch budget.", "batch budget")
         self.batches += 1
+
+    def hit_limit(self, limit):
+        with self.lock:
+            self.limit_hit = self.limit_hit or limit
+
+    def commit(self, apply):
+        """Run a result-changing step unless the search already closed its results."""
+        with self.lock:
+            if self.closed:
+                return False
+            apply()
+            return True
+
+    def close(self):
+        with self.lock:
+            self.closed = True
 
 @contextmanager
 def workflow_scope(flow):
@@ -61,7 +99,9 @@ def interruptible(function):
     """Stop the workflow promptly even if a library call cannot be interrupted.
 
     The worker retains its own context and AI slot until it actually returns;
-    its late result cannot be saved by the cancelled parent workflow.
+    its late result cannot be saved by the parent workflow once that has moved on.
+    A result that did arrive is returned even past the deadline: only a cancel
+    discards finished work.
     """
     flow = workflow()
     if flow is None:
@@ -76,18 +116,15 @@ def interruptible(function):
             result.put((False, exc))
     threading.Thread(target=work, daemon=True).start()
     while True:
-        flow.check()
         try:
             ok, value = result.get(timeout=min(.1, max(.001, flow.deadline-time.monotonic())))
         except queue.Empty:
+            flow.check()
             continue
-        flow.check()
+        flow.check_cancelled()
         if ok:
             return value
         raise value
-
-class PolicyError(RuntimeError):
-    pass
 
 @dataclass(frozen=True)
 class RunPolicy:

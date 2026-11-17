@@ -103,7 +103,7 @@ MIT. See [LICENSE](LICENSE).
 
 Generation uses the central policy in `core/policy.py`: two concurrent slots, a 300-second generation deadline and two application-level attempts shared by transient API retries, JSON repair and custom token-parameter compatibility retries. Interactive tasks wait up to 20 seconds for capacity; background scoring waits against its deadline.
 
-A whole job search has one workflow ID, a 600-second budget and at most 12 scoring batches. Use **Cancel search** to stop waiting and discard late results. A provider/library request already in progress may continue until it returns or times out, and may still consume credit; it retains its generation slot until it returns.
+A whole job search has one workflow ID, a 600-second budget and at most 12 scoring batches. Reaching either limit stops scoring but discards nothing: every fetched job and every score already returned is saved, the remaining jobs are saved as "not scored", and the search log says which limit was hit and how many jobs it left. Use **Cancel search** to stop waiting and discard the results; cancelling is the only thing that discards them. A provider/library request already in progress may continue until it returns or times out, and may still consume credit; it retains its generation slot until it returns.
 
 The named tasks `score`, `import`, `review`, `improve`, `tailor` route through one table to fast/main tiers. Settings shows the effective tier models, including fallback when a fast model is unset. Requested API token budgets are 2,048 / 8,192 / 3,072 / 12,288 / 8,192 respectively; OpenAI reasoning models receive additional completion headroom. Explicit provider truncation raises a cut-off error instead of spending the JSON retry.
 
