@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from . import engine, profile as profile_mod
+from . import engine, validation, profile as profile_mod
 
 
 def extract_text(path: str | Path) -> str:
@@ -61,9 +61,10 @@ CV text:
 def structure_cv(raw_text: str, cfg: dict | None = None) -> dict:
     if not raw_text.strip():
         raise RuntimeError("No text could be read from that file.")
-    data = engine.generate_json(_PROMPT.format(cv=raw_text[:16000]), cfg=cfg, task="fast")
+    data = engine.generate_json(_PROMPT.format(cv=raw_text[:16000]), cfg=cfg, task="import", schema=validation.IMPORT_SCHEMA)
     if not isinstance(data, dict):
         raise engine.EngineError("CV import returned an unexpected shape.")
+    validation.content(data)
     # Merge into a full, valid profile; keep preferences/work_auth defaults.
     base = json.loads(json.dumps(profile_mod.EMPTY_PROFILE))
     for key in ("personal", "nationality", "summary", "skills", "experience",
@@ -71,7 +72,9 @@ def structure_cv(raw_text: str, cfg: dict | None = None) -> dict:
         if key in data and data[key]:
             base[key] = data[key]
     base["meta"]["imported"] = True
-    return profile_mod.normalize_profile(base)
+    normalized = profile_mod.normalize_profile(base)
+    validation.profile_content(normalized, validation.IMPORT_SCHEMA)
+    return normalized
 
 
 def import_cv_file(path: str | Path, cfg: dict | None = None) -> dict:

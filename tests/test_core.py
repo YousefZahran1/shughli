@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from core import config, cv_coach, engine, filters, profile as P, scoring, sources, tailor, textutil
+from core import policy, config, cv_coach, engine, filters, profile as P, scoring, sources, tailor, textutil
 
 
 # ---------------------------------------------------------------- 1.2 clean ----
@@ -214,7 +214,7 @@ def test_cap_and_unscored_are_null(stub_generate):
     assert [j["score"] for j in out].count(None) == 3
     assert all(j["score"] is not None for j in out[:2])           # scored first
     assert all(j["score_reason"] == "not scored: low keyword overlap" for j in out[2:])
-    assert all(c["task"] == "fast" for c in stub_generate.calls)
+    assert all(c["task"] == "score" and policy.tier_for(c["task"]) == "fast" for c in stub_generate.calls)
 
 
 def test_failed_batch_leaves_null_not_zero(stub_generate):
@@ -302,12 +302,12 @@ def test_api_retry_shares_budget(monkeypatch):
 
 def test_claude_command_lean_and_model_tiers():
     cfg = config.DEFAULT_CONFIG
-    fast = engine._claude_cmd("claude", cfg, "fast", True)
-    main = engine._claude_cmd("claude", cfg, "main", True)
+    fast = engine._claude_cmd("claude", cfg, "fast")
+    main = engine._claude_cmd("claude", cfg, "main")
     assert "--strict-mcp-config" in fast and "--safe-mode" in fast and "--bare" not in fast
     assert fast[fast.index("--model") + 1] == "haiku" and "--model" not in main
-    old = engine._claude_cmd("claude", cfg, "main", False)
-    assert "--disallowed-tools" in old and "--safe-mode" not in old
+    old = engine._claude_cmd("claude", cfg, "main")
+    assert "--tools" in old and "--safe-mode" in old  # isolation never downgraded
 
 
 def test_model_for_defaults():
@@ -390,7 +390,7 @@ def test_reimport_keeps_nationality_not_personal(client, stub_generate):
     assert prof["nationality"] == "Egyptian" and prof["personal"]["name"] == "New Person"
     assert prof["personal"]["email"] == "new@x.com" and prof["preferences"]["target_country"] == "Germany"
     assert (config.DATA_DIR / "profile.prev.json").exists()
-    assert all(call["task"] == "fast" for call in stub_generate.calls)
+    assert all(call["task"] == "import" and policy.tier_for(call["task"]) == "fast" for call in stub_generate.calls)
 
 
 def test_tailor_route_uses_saved_unless_force(client, stub_generate):

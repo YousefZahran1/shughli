@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import json
 
-from . import engine, profile as profile_mod
+from . import engine, policy, validation, profile as profile_mod
 
 # Below this score, the UI shows the red "improve your CV" prompt.
 WEAK_THRESHOLD = 65
@@ -22,7 +22,7 @@ def _hash(profile: dict) -> str:
 def review(profile: dict, cfg=None) -> dict:
     """Cached in data/cv_review.json by profile hash: an unchanged profile costs no AI call."""
     from . import config
-    h = _hash(profile)
+    h = policy.digest([profile, policy.fingerprint(cfg), "coach-v3"])
     saved = config.read_json(config.CV_REVIEW_PATH, None)
     if isinstance(saved, dict) and saved.get("hash") == h and isinstance(saved.get("review"), dict):
         return saved["review"]
@@ -50,17 +50,18 @@ Return ONLY JSON:
 }}
 Give 3-6 issues, 2-5 missing items, and 4-6 questions. Questions should pull out
 quantified impact, scope, tools, and outcomes the CV is missing."""
-    data = engine.generate_json(prompt, cfg=cfg, task="main")
+    data = engine.generate_json(prompt, cfg=cfg, task="review", schema=validation.REVIEW_SCHEMA)
     if not isinstance(data, dict):
         raise engine.EngineError("CV review returned an unexpected shape.")
-    data.setdefault("score", 0)
-    for k in ("issues", "missing", "questions"):
-        data.setdefault(k, [])
-    return data
+    return validation.schema_check(validation.review(data), validation.REVIEW_SCHEMA)
 
 
 def improve(profile: dict, qa: list[dict], cfg=None) -> dict:
     """qa = [{"question": "...", "answer": "..."}]. Returns improved profile."""
+    if not isinstance(qa, list) or not qa or len(qa)>20 or any(
+            not isinstance(x, dict) or not isinstance(x.get("question"), str)
+            or not isinstance(x.get("answer"), str) or len(x["answer"])>5000 for x in qa):
+        raise engine.EngineError("Provide 1-20 questions and text answers (up to 5,000 characters each).")
     cv = profile_mod.as_cv_text(profile)
     answers = "\n".join(f"Q: {x.get('question','')}\nA: {x.get('answer','')}" for x in qa)
     prompt = f"""Improve this candidate's CV content. You may sharpen wording, add
@@ -85,9 +86,10 @@ Return ONLY JSON with improved content for these fields (same shapes as a profil
 }}
 Rewrite bullets to lead with impact and include numbers where the candidate gave
 them. Keep every real role/project; do not drop any."""
-    data = engine.generate_json(prompt, cfg=cfg, timeout=300, task="main")
+    data = engine.generate_json(prompt, cfg=cfg, timeout=300, task="improve", schema=validation.IMPROVE_SCHEMA)
     if not isinstance(data, dict):
         raise engine.EngineError("CV improve returned an unexpected shape.")
+    validation.content(data)
     out = json.loads(json.dumps(profile))  # copy
     if data.get("summary"):
         out["summary"] = data["summary"]
@@ -98,12 +100,14 @@ them. Keep every real role/project; do not drop any."""
     out["projects"] = _merge(profile.get("projects", []), data.get("projects"),
                              lambda e: (_nm(e.get("name")),), ("bullets", "stack"))
     out.setdefault("meta", {})["improved"] = True
-    return profile_mod.normalize_profile(out)
+    normalized = profile_mod.normalize_profile(out)
+    validation.profile_content(normalized, validation.IMPROVE_SCHEMA)
+    return normalized
 
 
 def _nm(v) -> str:
     import re
-    return re.sub(r"[^a-z0-9]+", " ", str(v or "").lower()).strip()
+    return re.sub(r"[\W_]+", " ", str(v or "").lower()).strip()
 
 
 def _merge(existing: list, returned, keyf, take: tuple) -> list:

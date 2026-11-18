@@ -31,6 +31,7 @@
 <section id="tab-jobs" class="panel">
   <div id="fetch-panel" class="fetch-panel hidden">
     <div class="fetch-head"><strong id="fetch-title">Fetching…</strong>
+      <button id="fetch-cancel" class="btn btn-ghost small">Cancel search</button>
       <button id="fetch-close" class="btn btn-ghost small">hide</button></div>
     <pre id="fetch-log" class="fetch-log"></pre>
   </div>
@@ -152,6 +153,8 @@
 <!-- ============ SETTINGS ============ -->
 <section id="tab-settings" class="panel hidden">
   <div class="settings-wrap">
+    <p id="effective-models" class="muted" aria-live="polite"></p>
+    <p id="effective-cap" class="muted" aria-live="polite"></p>
     <div class="card"><h3>AI backend</h3>
       <p class="muted small">Pick what generation runs on. CLI options use your existing subscription — log in right here, no terminal. API options need a key you paste in. Auto picks the first available.</p>
       <div id="backend-options" class="backend-list"></div>
@@ -177,7 +180,7 @@
   <div id="cvmodal-questions"></div>
   <div class="modal-actions">
     <span id="cvmodal-status" class="muted small"></span>
-    <button id="cvmodal-apply" class="btn btn-primary">Apply improvements</button>
+    <button id="cvmodal-apply" class="btn btn-primary">Preview improvements</button>
   </div>
 </div></div>
 
@@ -196,7 +199,8 @@
       <p class="label">Skills</p><ul id="g-skills" class="tight"></ul>
       <p class="label">Projects</p><ul id="g-projects" class="tight"></ul></div>
     <div class="gen-col"><h3>Cover letter <a id="dl-cl" class="dl" href="#">⬇ .docx</a></h3>
-      <pre id="g-cover" class="cover"></pre><div id="g-fit" class="fit"></div></div>
+      <pre id="g-cover" class="cover"></pre>
+      <aside id="g-review-notes" class="fit" aria-label="Review notes"></aside><aside id="g-dropped-items" class="fit" aria-label="Removed unsupported items"></aside><div id="g-fit" class="fit"></div></div>
   </div></div>
   <h3 class="jd-h">Job description</h3><pre id="d-desc" class="desc"></pre>
 </div></div>

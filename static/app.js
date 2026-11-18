@@ -53,6 +53,8 @@ async function refreshStatus() {
   try { s = await (await fetch("/api/status")).json(); }
   catch (e) { $("#subtitle").textContent = "\u26a0 server not reachable"; return null; }
   LAST_STATUS = s;
+  showModelRouting(s.model_routing);
+  showScoringCap(s.scoring_cap);
   CONFIG = s.config;
   $("#app-title").textContent = s.app_title;
   document.title = s.app_title;
@@ -279,6 +281,17 @@ async function saveKey(field, btn) {
   await fetch("/api/keys", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ [field]: val }) });
   input.value = ""; await refreshStatus(); loadBackends();
 }
+function showModelRouting(routing) {
+  if (!routing) return;
+  $("#effective-models").textContent = `Active backend: ${routing.backend}. Fast tier: ${routing.tiers.fast}. Main tier: ${routing.tiers.main}.`;
+}
+function showScoringCap(cap) {
+  if (!cap) return;
+  const covers = `${cap.max} jobs (${cap.batches} batches of ${cap.batch_size})`;
+  $("#effective-cap").textContent = cap.configured > cap.effective
+    ? `AI scoring cap: ${cap.effective} jobs per search. max_ai_scored is set to ${cap.configured}, but one search covers at most ${covers}.`
+    : `AI scoring cap: ${cap.effective} jobs per search (max_ai_scored). One search covers at most ${covers}.`;
+}
 function renderSettings() {
   $$("[data-cfg]").forEach(el => {
     const v = getPath(CONFIG, el.dataset.cfg);
@@ -294,6 +307,8 @@ async function saveSettings() {
   try {
     const r = await (await fetch("/api/config", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(cfg) })).json();
     if (!r.ok) throw new Error(r.msg || "save failed");
+    showModelRouting(r.model_routing);
+    showScoringCap(r.scoring_cap);
     CONFIG = r.config; $("#settings-saved").textContent = "saved ✓";
     refreshStatus(); setTimeout(() => $("#settings-saved").textContent = "", 2500);
   } catch (e) { $("#settings-saved").textContent = "\u26a0 " + e.message; }
@@ -303,6 +318,7 @@ $("#settings-save").onclick = saveSettings;
 
 // ================= JOBS =================
 let pollTimer = null;
+let SEARCH_ID = null;
 async function startFetch() {
   $("#fetch-btn").disabled = true; $("#fetch-panel").classList.remove("hidden");
   $("#fetch-title").innerHTML = '<span class="spin"></span>Fetching + scoring…';
@@ -320,6 +336,9 @@ function resumeFetch() {   // page was reloaded while a fetch was running
 async function pollLog() {
   let d;
   try { d = await (await fetch("/api/fetch/log")).json(); } catch { return; }
+  SEARCH_ID = d.workflow_id;
+  $("#fetch-cancel").disabled = !d.running || d.cancelling;
+  $("#fetch-cancel").textContent = d.cancelling ? "Cancelling…" : "Cancel search";
   $("#fetch-log").textContent = d.log.join("\n"); $("#fetch-log").scrollTop = 1e9;
   if (!d.running) {
     clearInterval(pollTimer); $("#fetch-btn").disabled = false;
@@ -383,6 +402,14 @@ async function tailor() {
     $("#g-skills").innerHTML = (p.skills || []).map(s => `<li><b>${esc(s[0] || "")}</b>${esc(s[1] || "")}</li>`).join("");
     $("#g-projects").innerHTML = (p.projects || []).map(pr => `<li><b>${esc(pr.header || "")}</b><br>${(pr.bullets || []).map(esc).join("<br>")}</li>`).join("");
     $("#g-cover").textContent = p.cover_letter || "";
+    const checks = p.source_checks || {};
+    $("#g-review-notes").textContent = "Review before submitting: " + (checks.note || "Check all claims against your CV.") +
+      (checks.warnings?.length ? "\n" + checks.warnings.join("\n") : "");
+    const removed = p.dropped_items || {};
+    $("#g-dropped-items").textContent = [
+      ...(removed.skills || []).map(s => `Removed unsupported skill: ${s.item}`),
+      ...(removed.projects || []).map(pr => `Removed unsupported project: ${pr.header}`)
+    ].join("\n");
     const fit = p.fit || {};
     $("#g-fit").innerHTML = (fit.matches || []).map(m => `<div>✓ <b>${esc(m)}</b></div>`).join("") + (fit.gaps || []).map(g => `<div class="gap">△ <b>${esc(g)}</b></div>`).join("");
     $("#dl-cv").href = "/api/download?path=" + encodeURIComponent(p.cv_docx);
@@ -402,6 +429,7 @@ function showCvBanner(rev) {
   if (weak) { $("#cvq-title").textContent = `⚠ Your CV scores ${rev.score}/100 — it's holding back your matches`; $("#cvq-verdict").textContent = rev.verdict || ""; }
 }
 function openCvModal(rev) {
+  $("#cvmodal-apply").classList.remove("hidden");
   const tagColor = rev.score >= 65 ? "var(--good)" : rev.score >= 45 ? "var(--warn)" : "#e5484d";
   $("#cvmodal-review").innerHTML = `<div class="cvq-review">
     <span class="tag" style="background:${tagColor};color:#06240f">CV score ${rev.score}/100</span>
@@ -425,8 +453,26 @@ async function applyImprovements() {
   try {
     const d = await (await fetch("/api/cv/improve", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ qa }) })).json();
     if (!d.ok) throw new Error(d.msg);
-    renderProfile(d.profile); $("#cv-quality").classList.add("hidden"); $("#cvmodal").classList.add("hidden");
-    $("#profile-saved").innerHTML = '<span style="color:var(--good)">CV improved ✓ — review & save</span>';
+    const fields = ["summary", "skills", "experience", "projects"];
+    $("#cvmodal-review").innerHTML = '<p>Review the proposed changes. Your saved CV has not changed.</p>' +
+      fields.filter(k => JSON.stringify(d.before[k]) !== JSON.stringify(d.profile[k])).map(k =>
+        `<h3>${esc(k)}</h3><div style="display:grid;grid-template-columns:1fr 1fr;gap:12px"><div><b>Before</b><pre style="white-space:pre-wrap">${esc(JSON.stringify(d.before[k], null, 2))}</pre></div><div><b>Proposed</b><pre style="white-space:pre-wrap">${esc(JSON.stringify(d.profile[k], null, 2))}</pre></div></div>`).join("") +
+      `<p>${esc(d.source_checks.note)}</p>` + (d.source_checks.warnings || []).map(w => `<p>${esc(w)}</p>`).join("");
+    $("#cvmodal-questions").innerHTML = '<button id="cv-accept" class="btn btn-primary">Accept and save</button> <button id="cv-reject" class="btn">Reject changes</button>';
+    $("#cvmodal-status").textContent = "Awaiting your review.";
+    $("#cvmodal-apply").classList.add("hidden");
+    $("#cv-reject").onclick = () => $("#cvmodal").classList.add("hidden");
+    $("#cv-accept").onclick = async () => {
+      const btn = $("#cv-accept"); btn.disabled = true;
+      try {
+        const r = await (await fetch("/api/profile", { method: "POST", headers: { "content-type": "application/json" },
+          body: JSON.stringify({ ...d.profile, _base_hash: d.base_hash }) })).json();
+        if (!r.ok) throw new Error(r.msg);
+        renderProfile(r.profile); $("#cv-quality").classList.add("hidden"); $("#cvmodal").classList.add("hidden");
+        $("#profile-saved").textContent = "Reviewed CV changes saved.";
+      } catch (e) { $("#cvmodal-status").textContent = e.message; }
+      finally { btn.disabled = false; }
+    };
   } catch (e) { $("#cvmodal-status").textContent = "⚠ " + e.message; }
   finally { $("#cvmodal-apply").disabled = false; }
 }
@@ -438,6 +484,12 @@ $("#cvmodal-apply").onclick = applyImprovements;
 $("#cvmodal").onclick = e => { if (e.target.id === "cvmodal") $("#cvmodal").classList.add("hidden"); };
 
 $("#fetch-btn").onclick = startFetch;
+$("#fetch-cancel").onclick = async () => {
+  await pollLog();
+  const result = await (await fetch("/api/fetch/cancel", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ workflow_id: SEARCH_ID }) })).json();
+  if (!result.ok) $("#fetch-title").textContent = result.msg;
+  await pollLog();
+};
 $("#fetch-close").onclick = () => $("#fetch-panel").classList.add("hidden");
 $("#drawer-close").onclick = () => $("#drawer").classList.add("hidden");
 $("#drawer").onclick = e => { if (e.target.id === "drawer") $("#drawer").classList.add("hidden"); };

@@ -25,3 +25,6 @@ Thumbs.db
 *.corrupt
 *.prev.json
 config.json
+
+# Local implementation and test scratch files
+/work/

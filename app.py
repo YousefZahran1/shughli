@@ -20,7 +20,7 @@ from urllib.parse import urlparse
 from flask import Flask, jsonify, request, send_file, send_from_directory
 from werkzeug.utils import secure_filename
 
-from core import (config, cv_coach, cv_import, engine, profile as profile_mod,
+from core import (policy, validation, config, cv_coach, cv_import, engine, profile as profile_mod,
                   scoring, sources, tailor)
 
 for _s in (sys.stdout, sys.stderr):
@@ -30,8 +30,9 @@ for _s in (sys.stdout, sys.stderr):
         pass
 
 app = Flask(__name__, static_folder="static", static_url_path="")
+app.config["MAX_CONTENT_LENGTH"] = 10 * 1024 * 1024
 
-_fetch = {"running": False, "log": [], "count": 0, "error": None}
+_fetch = {"running": False, "log": [], "count": 0, "error": None, "workflow": None}
 _lock = threading.Lock()
 
 
@@ -61,31 +62,51 @@ def _reject_cross_origin_posts():
 
 def _run_fetch(do_score: bool) -> None:
     # `running` is set by start_fetch under the lock, before this thread starts.
-    try:
-        cfg, prof = config.load_config(), profile_mod.load_profile()
-        old_jobs = _load_cache()
-        _log("Fetching jobs…")
-        jobs = sources.collect(prof, cfg, log=_log)
-        if do_score and jobs:
-            if engine.resolve_backend(cfg) == "none":
+    flow = _fetch.get("workflow") or policy.Workflow()
+    def workflow_log(message):
+        # Lines from a worker the search has already moved on from are dropped.
+        with _lock:
+            if _fetch.get("workflow") is not flow or flow.cancel.is_set() or flow.closed:
+                return
+            _fetch["log"].append(f"{time.strftime('%H:%M:%S')}  {message}")
+    with policy.workflow_scope(flow):
+        try:
+            policy.check_workflow()
+            cfg, prof = config.load_config(), profile_mod.load_profile()
+            old_jobs = _load_cache()
+            _log("Fetching jobs…")
+            jobs = policy.interruptible(lambda: sources.collect(prof, cfg, log=workflow_log))
+            flow.check_cancelled()
+            # From here on the fetched jobs are kept whatever happens to scoring:
+            # a search limit stops the spending, only a user cancel discards results.
+            if do_score and jobs and engine.resolve_backend(cfg) == "none":
                 _log("⚠ No AI backend — skipping scoring (jobs still listed).")
-                jobs = scoring.apply_scores(jobs, {})
-            else:
+            elif do_score and jobs:
                 _log(f"Scoring via {engine.resolve_backend(cfg)}…")
-                jobs = scoring.run(jobs, prof, old_jobs, cfg, log=_log)
-        else:
+                plan = scoring.prepare(jobs, prof, old_jobs, cfg)
+                try:
+                    policy.interruptible(lambda: scoring.score_plan(plan, jobs, prof, cfg, log=workflow_log))
+                except policy.WorkflowLimit as limit:
+                    flow.hit_limit(limit.limit)
+            flow.close()   # a scoring call still in flight can no longer change jobs or the log
+            flow.check_cancelled()
             jobs = scoring.apply_scores(jobs, {})
-        _save_cache(jobs)
-        with _lock:
-            _fetch["count"] = len(jobs)
-        _log(f"Done. {len(jobs)} jobs cached.")
-    except Exception as e:  # noqa: BLE001
-        _log(f"ERROR: {e}")
-        with _lock:
-            _fetch["error"] = str(e)
-    finally:
-        with _lock:
-            _fetch["running"] = False
+            _save_cache(jobs)
+            with _lock:
+                _fetch["count"] = len(jobs)
+            if flow.limit_hit:
+                left = sum(1 for j in jobs if j.get("score") is None and j.get("score_reason") == "not scored")
+                _log(f"Stopped scoring: {policy.describe_limit(flow.limit_hit)} reached. {left} of {len(jobs)} jobs "
+                     "left not scored; every fetched job and every finished score was saved.")
+            _log(f"Done. {len(jobs)} jobs cached.")
+        except Exception as e:  # noqa: BLE001
+            _log(f"ERROR: {e}")
+            with _lock:
+                _fetch["error"] = str(e)
+        finally:
+            flow.close()
+            with _lock:
+                _fetch["running"] = False
 
 
 # ---------------------------------------------------------------- routes ----
@@ -102,6 +123,8 @@ def status():
     return jsonify({
         "backends": engine.available_backends(cfg),
         "active_backend": engine.resolve_backend(cfg),
+        "model_routing": policy.model_routing(cfg),
+        "scoring_cap": scoring.cap_info(cfg),
         "keys": {"anthropic": bool(cfg.get("anthropic_api_key")),
                  "openai": bool(cfg.get("openai_api_key"))},
         "profile_ready": profile_mod.is_ready(prof),
@@ -172,12 +195,16 @@ def cv_review():
 
 @app.post("/api/cv/improve")
 def cv_improve():
-    qa = (request.get_json(silent=True) or {}).get("qa", [])
+    body = request.get_json(silent=True)
+    if not isinstance(body, dict):
+        return jsonify({"ok": False, "msg": "Expected a JSON object."}), 400
+    qa = body.get("qa", [])
     try:
-        improved = cv_coach.improve(profile_mod.load_profile(), qa)
-        profile_mod.backup_profile()
-        saved = profile_mod.save_profile(improved)
-        return jsonify({"ok": True, "profile": saved})
+        source = profile_mod.load_profile()
+        improved = cv_coach.improve(source, qa)
+        checks = validation.source_checks(profile_mod.as_cv_text(improved), profile_mod.as_cv_text(source) + json.dumps(qa, ensure_ascii=False))
+        return jsonify({"ok": True, "profile": improved, "before": source,
+                        "base_hash": policy.digest(source), "source_checks": checks})
     except engine.EngineError as e:
         return jsonify({"ok": False, "msg": str(e)}), 502
 
@@ -189,7 +216,13 @@ def get_profile():
 
 @app.post("/api/profile")
 def save_profile():
-    body = request.get_json(silent=True) or {}
+    body = request.get_json(silent=True)
+    if not isinstance(body, dict):
+        return jsonify({"ok": False, "msg": "Expected a JSON object."}), 400
+    base_hash = body.pop("_base_hash", None)
+    if base_hash and base_hash != policy.digest(profile_mod.load_profile()):
+        return jsonify({"ok": False, "msg": "Profile changed while reviewing. Reload and try again."}), 409
+    profile_mod.backup_profile()
     return jsonify({"ok": True, "profile": profile_mod.save_profile(body)})
 
 
@@ -255,7 +288,9 @@ def _validate_config(body: dict) -> dict:
     if "hours_old" in body:
         out["hours_old"] = _int_in(body, "hours_old", 24, 2160)
     if "max_ai_scored" in body:
-        out["max_ai_scored"] = _int_in(body, "max_ai_scored", 1, 500)
+        # Above what one search can score (batch budget x batch size) is stored as that ceiling.
+        # Settings re-posts the whole config, so an older, larger value must not block saving.
+        out["max_ai_scored"] = min(_int_in(body, "max_ai_scored", 1, 100000), scoring.cap_info({})["max"])
     for k in _STR_KEYS:
         if k in body:
             if not isinstance(body[k], str):
@@ -294,7 +329,8 @@ def set_config():
         else:
             cfg[k] = v
     config.save_config(cfg)
-    return jsonify({"ok": True, "config": _public_cfg(cfg)})
+    return jsonify({"ok": True, "config": _public_cfg(cfg), "model_routing": policy.model_routing(cfg),
+                    "scoring_cap": scoring.cap_info(cfg)})
 
 
 @app.post("/api/fetch")
@@ -306,17 +342,32 @@ def start_fetch():
     with _lock:   # check-and-set in one block so two clicks cannot both start a fetch
         if _fetch["running"]:
             return jsonify({"ok": False, "msg": "Fetch already running."}), 409
-        _fetch.update(running=True, log=[], count=0, error=None)
+        _fetch.update(running=True, log=[], count=0, error=None, workflow=policy.Workflow())
     threading.Thread(target=_run_fetch, kwargs={"do_score": body.get("score", True)},
                      daemon=True).start()
-    return jsonify({"ok": True})
+    return jsonify({"ok": True, "workflow_id": _fetch["workflow"].id})
+
+
+@app.post("/api/fetch/cancel")
+def cancel_fetch():
+    body = request.get_json(silent=True) or {}
+    with _lock:
+        flow = _fetch.get("workflow")
+        if not _fetch["running"] or not flow:
+            return jsonify({"ok": False, "msg": "No search is running."}), 409
+        if body.get("workflow_id") != flow.id:
+            return jsonify({"ok": False, "msg": "Search changed. Refresh its status."}), 409
+        flow.cancel.set()
+    return jsonify({"ok": True, "msg": "Cancellation requested."})
 
 
 @app.get("/api/fetch/log")
 def fetch_log():
     with _lock:
         return jsonify({"running": _fetch["running"], "log": _fetch["log"][-100:],
-                        "error": _fetch["error"], "count": _fetch["count"]})
+                        "error": _fetch["error"], "count": _fetch["count"],
+                        "workflow_id": _fetch["workflow"].id if _fetch.get("workflow") else None,
+                        "cancelling": bool(_fetch.get("workflow") and _fetch["workflow"].cancel.is_set())})
 
 
 @app.get("/api/jobs")

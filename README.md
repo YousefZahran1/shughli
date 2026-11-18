@@ -84,7 +84,7 @@ Your profile, cached jobs and generated files live in `data/`, and your settings
 - LinkedIn may rate-limit you without a proxy. Indeed is the most reliable board.
 - Fetching is slow because it also pulls job descriptions.
 - Scoring and tailoring use your subscription or API credit, so tailor only the jobs you plan to apply for.
-- To keep cost down, scoring and CV import use a cheaper model tier, and only the top `max_ai_scored` jobs (40 by default) go to the AI. The rest show as unscored.
+- To keep cost down, scoring and CV import use a cheaper model tier, and only the top `max_ai_scored` jobs (40 by default) go to the AI. The rest show as unscored. One search can score at most 216 jobs (12 batches of 18), so a larger `max_ai_scored` is capped to 216; Settings shows the cap in effect.
 - A tailored package is saved, so opening it again costs nothing until you hit Regenerate.
 - I have run it on Windows. It should work on macOS and Linux too.
 
@@ -98,3 +98,33 @@ python -m pytest -q
 ## License
 
 MIT. See [LICENSE](LICENSE).
+
+## AI execution and review controls
+
+Generation uses the central policy in `core/policy.py`: two concurrent slots, a 300-second generation deadline and two application-level attempts shared by transient API retries, JSON repair and custom token-parameter compatibility retries. Interactive tasks wait up to 20 seconds for capacity; background scoring waits against its deadline.
+
+A whole job search has one workflow ID, a 600-second budget and at most 12 scoring batches. Reaching either limit stops scoring but discards nothing: every fetched job and every score already returned is saved, the remaining jobs are saved as "not scored", and the search log says which limit was hit and how many jobs it left. Use **Cancel search** to stop waiting and discard the results; cancelling is the only thing that discards them. A provider/library request already in progress may continue until it returns or times out, and may still consume credit; it retains its generation slot until it returns.
+
+The named tasks `score`, `import`, `review`, `improve`, `tailor` route through one table to fast/main tiers. Settings shows the effective tier models, including fallback when a fast model is unset. Requested API token budgets are 2,048 / 8,192 / 3,072 / 12,288 / 8,192 respectively; OpenAI reasoning models receive additional completion headroom. Explicit provider truncation raises a cut-off error instead of spending the JSON retry.
+
+Claude requires disabled tools/MCP/customizations and safe mode. Codex requests read-only, no-shell/no-web/no-hooks execution. Both generate from fresh directories. These are CLI restrictions, not an OS/container isolation guarantee. Unsupported options fail without a weaker fallback. CLI errors distinguish authentication, limits, unsupported flags, timeouts and other failures. Truncated raw diagnostic text is stored only in gitignored `data/private_debug/`; treat those files as sensitive.
+
+Shared instructions classify CVs, answers and postings as untrusted data. APIs receive the instruction once in the system role; Claude receives it once as its system prompt and Codex once in stdin. Strict native OpenAI schemas and normalized local validation check response structure. These controls do not prove factuality or injection immunity.
+
+CV coach changes require a before/after review and explicit acceptance. Tailoring normalizes skill names and selected aliases, preserves supported project identities/dates, and shows removed skills/projects separately. Numeric warnings and review notes are outside the cover letter so copying it includes only the letter.
+
+Caches incorporate relevant input, prompt and model/backend identity. `data/ai_runs.jsonl` rotates private run metadata including workflow IDs, timings, attempts and provider-reported model/usage data when supplied. It excludes prompts, CV text, keys and raw error bodies. Missing actual-model metadata is labeled rather than guessed. Application usage limits are not a currency spending cap.
+
+```powershell
+python -m pip install -r requirements.txt -r requirements-dev.txt
+python -m pytest -q --basetemp=work/pytest
+node --check static/app.js
+```
+
+Optional synthetic English/Arabic quality checks use the selected backend and subscription/API credit:
+
+```powershell
+python -m core.evals --live
+```
+
+Review `data/eval_report.json`. See `AI_CONTROL_REVIEW.md` and `CHANGELOG_AI_HARDENING.md` for verification and remaining limitations.

@@ -7,11 +7,11 @@ and jobs that were not scored stay `score: None` — never a fake 0.
 """
 from __future__ import annotations
 
-import hashlib
+import math
 import json
 import re
 
-from . import engine, profile as profile_mod
+from . import engine, policy, profile as profile_mod
 from .textutil import excerpt
 
 BATCH = 18
@@ -59,6 +59,22 @@ def _prompt(cv: str, work_auth: list, jobs: list[dict], seniority: list) -> str:
                           jobs_json=json.dumps(rows, ensure_ascii=False))
 
 
+# ----------------------------------------------------------------- cap ----
+def cap_info(cfg: dict | None) -> dict:
+    """The `max_ai_scored` setting next to what one search can actually score.
+
+    A search may run `policy.SEARCH_MAX_BATCHES` batches of `BATCH` jobs, so that
+    product is the real ceiling; a larger setting is capped to it.
+    """
+    covered = policy.SEARCH_MAX_BATCHES * BATCH
+    try:
+        configured = int((cfg or {}).get("max_ai_scored") or 40)
+    except (TypeError, ValueError):
+        configured = 40
+    return {"configured": configured, "effective": max(1, min(configured, covered)), "max": covered,
+            "batches": policy.SEARCH_MAX_BATCHES, "batch_size": BATCH}
+
+
 # ------------------------------------------------------------- parsing ----
 def _coerce_score(v) -> int | None:
     if isinstance(v, bool):
@@ -70,6 +86,8 @@ def _coerce_score(v) -> int | None:
         if not m:
             return None
         n = float(m.group(0))
+    if not math.isfinite(n):
+        return None
     return max(0, min(100, int(round(n))))
 
 
@@ -120,32 +138,71 @@ def rank_local(jobs: list[dict], profile: dict) -> list[dict]:
     return sorted(jobs, key=lambda j: (_overlap(j, terms), len(j.get("description") or "")), reverse=True)
 
 
-def score_key(profile: dict) -> str:
+def score_key(profile: dict, cfg=None) -> str:
     """Identifies what a score was computed against: CV text, target levels, prompt version."""
     seniority = profile.get("preferences", {}).get("seniority", [])
     basis = profile_mod.as_cv_text(profile) + "\n" + ",".join(sorted(seniority)) + "\n" + PROMPT_VERSION
-    return hashlib.sha1(basis.encode("utf-8")).hexdigest()[:16]
+    return policy.digest([basis, profile.get("work_authorization", []), _PROMPT, policy.fingerprint(cfg, "score")])
 
 
 # --------------------------------------------------------------- score ----
-def score_jobs(jobs: list[dict], profile: dict, cfg=None, log=print) -> dict[str, dict]:
-    """AI-score `jobs`. Jobs the AI did not score are simply absent from the result."""
+def _commit(apply) -> bool:
+    """Change results, unless the search has already closed them (a late worker)."""
+    flow = policy.workflow()
+    if flow is None:
+        apply()
+        return True
+    return flow.commit(apply)
+
+
+def score_jobs(jobs: list[dict], profile: dict, cfg=None, log=print, on_batch=None) -> dict[str, dict]:
+    """AI-score `jobs`. Jobs the AI did not score are simply absent from the result.
+
+    A search limit (workflow deadline or batch budget) stops the loop and keeps
+    every score already returned; the limit is recorded on the workflow. Only a
+    user cancel raises. `on_batch` receives each batch's scores as they arrive.
+    """
     cv = profile_mod.as_cv_text(profile)
     wa = profile.get("work_authorization", [])
     seniority = profile.get("preferences", {}).get("seniority", [])
     results: dict[str, dict] = {}
+    flow = policy.workflow()
     for i in range(0, len(jobs), BATCH):
+        try:
+            if flow:
+                flow.next_batch()
+        except policy.WorkflowLimit as e:
+            flow.hit_limit(e.limit)
+            break
         batch = jobs[i:i + BATCH]
         try:
-            data = engine.generate_json(_prompt(cv, wa, batch, seniority), cfg=cfg, task="fast")
+            data = engine.generate_json(_prompt(cv, wa, batch, seniority), cfg=cfg, task="score")
+            scored: dict[str, dict] = {}
             for item in _items(data):
                 if not isinstance(item, dict):
                     continue
                 jid = str(item.get("id", ""))
                 score = _coerce_score(item.get("score"))
-                if jid and score is not None:
-                    results[jid] = {"score": score, "reason": str(item.get("reason", ""))[:120]}
+                if jid in {str(j["id"]) for j in batch} and jid not in results and jid not in scored and score is not None:
+                    source_job = next(j for j in batch if str(j["id"]) == jid)
+                    reason = " ".join(str(item.get("reason", "")).split()[:12])[:120]
+                    if "description" in source_job and not source_job.get("description"):
+                        score = min(score, 70)
+                        reason = "title only: " + reason
+                    scored[jid] = {"score": score, "reason": reason}
+            results.update(scored)
+            if on_batch:
+                on_batch(scored)
             log(f"Scored batch {i // BATCH + 1} ({len(batch)}).")
+        except policy.PolicyError as e:
+            # The engine reports a cancelled or expired search as an ordinary error:
+            # ask the workflow itself what happened.
+            try:
+                policy.check_workflow()
+            except policy.WorkflowLimit as limit:
+                flow.hit_limit(limit.limit)
+                break
+            log(f"Scoring batch {i // BATCH + 1} failed: {e}")
         except Exception as e:  # noqa: BLE001
             log(f"Scoring batch {i // BATCH + 1} failed: {e}")
     return results
@@ -169,31 +226,54 @@ def sort_jobs(jobs: list[dict]) -> list[dict]:
     return jobs
 
 
-def run(jobs: list[dict], profile: dict, old_jobs: list[dict], cfg: dict, log=print) -> list[dict]:
-    """Full scoring pass for a fetch: reuse, local pre-rank + cap, AI score."""
-    key = score_key(profile)
+def prepare(jobs: list[dict], profile: dict, old_jobs: list[dict], cfg: dict) -> dict:
+    """Local step, no AI: reuse earlier scores, pre-rank, pick what goes to the AI.
+
+    Every job leaves here with a score or a "not scored" mark, so the list can be
+    saved at any moment afterwards, however far AI scoring gets.
+    """
+    key = score_key(profile, cfg)
     old = {j.get("id"): j for j in old_jobs}
     todo: list[dict] = []
     reused = 0
     for j in jobs:
         o = old.get(j["id"])
-        if o and o.get("score") is not None and o.get("score_key") == key:
+        if o and o.get("score") is not None and o.get("score_key") == key and policy.digest(o.get("description", "")) == policy.digest(j.get("description", "")) and all(o.get(k) == j.get(k) for k in ("title", "company", "location", "level")):
             j["score"], j["score_reason"], j["score_key"] = o["score"], o.get("score_reason", ""), key
             reused += 1
         else:
             todo.append(j)
-    cap = int(cfg.get("max_ai_scored", 40) or 40)
+    cap = cap_info(cfg)["effective"]
     ranked = rank_local(todo, profile)
     send, skipped = ranked[:cap], ranked[cap:]
     for j in skipped:
         j["score"], j["score_reason"] = None, "not scored: low keyword overlap"
-    scores = score_jobs(send, profile, cfg=cfg, log=log) if send else {}
     for j in send:
-        s = scores.get(j["id"])
-        if s:
-            j["score"], j["score_reason"], j["score_key"] = s["score"], s["reason"], key
-        else:
-            j["score"], j["score_reason"] = None, "not scored"
-    log(f"{len(scores)} scored, {reused} reused, {len(skipped)} left unscored (low keyword overlap), "
-        f"{len(send) - len(scores)} failed.")
-    return sort_jobs(jobs)
+        j["score"], j["score_reason"] = None, "not scored"
+    return {"key": key, "send": send, "reused": reused, "skipped": len(skipped)}
+
+
+def score_plan(plan: dict, jobs: list[dict], profile: dict, cfg: dict, log=print) -> list[dict]:
+    """AI step: score the planned jobs, writing each batch's scores as it returns."""
+    send, key = plan["send"], plan["key"]
+    by_id = {str(j["id"]): j for j in send}
+
+    def write(scored: dict) -> None:
+        def apply():
+            for jid, s in scored.items():
+                j = by_id[jid]
+                j["score"], j["score_reason"], j["score_key"] = s["score"], s["reason"], key
+        _commit(apply)
+
+    scores = score_jobs(send, profile, cfg=cfg, log=log, on_batch=write) if send else {}
+    flow = policy.workflow()
+    missing = "not scored" if flow and flow.limit_hit else "failed"
+    log(f"{len(scores)} scored, {plan['reused']} reused, {plan['skipped']} left unscored (low keyword overlap), "
+        f"{len(send) - len(scores)} {missing}.")
+    _commit(lambda: sort_jobs(jobs))
+    return jobs
+
+
+def run(jobs: list[dict], profile: dict, old_jobs: list[dict], cfg: dict, log=print) -> list[dict]:
+    """Full scoring pass for a fetch: reuse, local pre-rank + cap, AI score."""
+    return score_plan(prepare(jobs, profile, old_jobs, cfg), jobs, profile, cfg, log=log)
